@@ -1,0 +1,11 @@
+{
+  "name": "elmanuel1-mods",
+  "owner": { "name": "Elmanuel1" },
+  "plugins": [
+    {
+      "name": "docs-watch",
+      "source": "./docs-watch",
+      "description": "When one of your PRs merges, drafts the documentation update and opens it as a PR once you approve"
+    }
+  ]
+}
