@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface as Engine, Register } from 'claude-code'
 
-import type { Status, Tracked } from '../types'
+import type { LogEntry, Status, Tracked } from '../types'
 
 const PANE = 'docs-watch'
 const TICK_MS = 5 * 60 * 1000
@@ -15,15 +15,61 @@ const NO_DOCS_NEEDED = /(^|\/)docs?\/|\.mdx?$|(^|\/)(test|tests|__tests__|spec)\
 const shown = atom({ plugin: 'docs-watch', key: 'shown' } as const, null)
 const diff = atom({ plugin: 'docs-watch', key: 'diff' } as const, null)
 const setup = atom({ plugin: 'docs-watch', key: 'setup' } as const, null)
+const errors = atom({ plugin: 'docs-watch', key: 'errors' } as const, null)
 
 // This session's id for the poller lease: only one open session polls GitHub at a time.
 const me = Math.random().toString(36).slice(2)
+
+const LOG_KEY = 'log'
+const LOG_LIMIT = 100
+
+const describe = (error: unknown) => (error instanceof Error ? `${error.name}: ${error.message}` : String(error))
+
+// Every failure goes to the debug log and to the mod's own log, which the pane shows; logging itself never throws.
+async function logError($: Engine, where: string, detail: unknown, key?: string): Promise<void> {
+  const message = describe(detail).slice(0, 2000)
+  try {
+    $.ui.log(`docs-watch ${where}${key ? ` (${key})` : ''}: ${message}`, { to: 'debug' })
+  } catch {
+    // the debug log is best effort
+  }
+  try {
+    const log = ((await $.store.get(LOG_KEY)) as LogEntry[] | undefined) ?? []
+    const entry: LogEntry = { at: Date.now(), where, message, key }
+    await $.store.set(LOG_KEY, [...log.slice(-(LOG_LIMIT - 1)), entry])
+  } catch {
+    // the store failing leaves the debug log line as the only record
+  }
+}
 
 async function run($: Engine, argv: string[], cwd?: string) {
   try {
     return await $.process.run(argv, { cwd, timeoutMs: 120000 })
   } catch (error) {
-    return { exitCode: 127, stdout: '', stderr: String(error) }
+    return { exitCode: 127, stdout: '', stderr: describe(error) }
+  }
+}
+
+// A command whose failure matters: a non-zero exit is logged with the command and the last line of its stderr.
+async function runLogged($: Engine, where: string, argv: string[], cwd?: string, key?: string) {
+  const result = await run($, argv, cwd)
+  if (result.exitCode !== 0) {
+    const tail = result.stderr.trim().split('\n').pop() ?? ''
+    await logError($, where, `\`${argv.join(' ').slice(0, 200)}\` exited ${result.exitCode}: ${tail}`, key)
+  }
+  return result
+}
+
+async function recentErrors($: Engine): Promise<LogEntry[]> {
+  const log = ((await $.store.get(LOG_KEY)) as LogEntry[] | undefined) ?? []
+  return log.slice(-10).reverse()
+}
+
+function parseJson<T>(text: string): T | null {
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    return null
   }
 }
 
@@ -45,7 +91,7 @@ async function setupProblem($: Engine): Promise<string | null> {
 }
 
 async function home($: Engine): Promise<string> {
-  const env = await run($, ['printenv', 'HOME'])
+  const env = await runLogged($, 'home', ['printenv', 'HOME'])
   return env.stdout.trim()
 }
 
@@ -61,7 +107,7 @@ async function notify($: Engine, text: string): Promise<void> {
   const os = await run($, ['uname'])
   if (os.stdout.trim() === 'Darwin') {
     const script = `display notification ${JSON.stringify(text)} with title "Claude: docs"`
-    await run($, ['osascript', '-e', script])
+    await runLogged($, 'notify', ['osascript', '-e', script])
   }
 }
 
@@ -72,7 +118,7 @@ async function registerRepo($: Engine): Promise<void> {
     return
   }
   const checkout = top.stdout.trim()
-  const name = await run($, ['gh', 'repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], checkout)
+  const name = await runLogged($, 'register repo', ['gh', 'repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], checkout)
   if (name.exitCode !== 0) {
     return
   }
@@ -97,7 +143,7 @@ async function save($: Engine, tracked: Tracked): Promise<void> {
 
 async function visible($: Engine): Promise<Tracked[]> {
   const tracked = await allTracked($)
-  return tracked.filter((t) => SHOWN.includes(t.status))
+  return tracked.filter((t) => SHOWN.includes(t.status) || (t.status === 'drafting' && t.pendingStart))
 }
 
 async function holdsLease($: Engine, now: number): Promise<boolean> {
@@ -109,37 +155,39 @@ async function holdsLease($: Engine, now: number): Promise<boolean> {
   return true
 }
 
-async function readResult($: Engine, file: string): Promise<Record<string, unknown> | null> {
+// Null while the file does not exist yet; a file that is there but not JSON is logged.
+async function readResult($: Engine, file: string, key: string): Promise<Record<string, unknown> | null> {
   const out = await run($, ['cat', file])
   if (out.exitCode !== 0) {
     return null
   }
-  try {
-    return JSON.parse(out.stdout) as Record<string, unknown>
-  } catch {
-    return null
+  const parsed = parseJson<Record<string, unknown>>(out.stdout)
+  if (parsed === null) {
+    await logError($, 'result file', `${file} is not JSON: ${out.stdout.slice(0, 200)}`, key)
   }
+  return parsed
 }
 
 async function removeWorktree($: Engine, t: Tracked): Promise<void> {
   if (t.checkout && t.work) {
-    await run($, ['git', '-C', t.checkout, 'worktree', 'remove', '--force', t.work])
+    await runLogged($, 'remove worktree', ['git', '-C', t.checkout, 'worktree', 'remove', '--force', t.work], undefined, t.key)
   }
 }
 
 async function startDraft($: Engine, t: Tracked): Promise<void> {
   const checkout = (await $.store.get(`repo:${t.repo}`)) as string | undefined
   if (!checkout) {
+    await logError($, 'draft', `no local checkout registered for ${t.repo}: open a Claude Code session in it`, t.key)
     return
   }
   const dir = await stateDir($)
   const work = `${dir}/work/${slug(t.key)}`
-  await run($, ['mkdir', '-p', `${dir}/work`, `${dir}/results`])
-  await run($, ['git', '-C', checkout, 'fetch', '-q', 'origin'])
+  await runLogged($, 'draft', ['mkdir', '-p', `${dir}/work`, `${dir}/results`], undefined, t.key)
+  await runLogged($, 'draft', ['git', '-C', checkout, 'fetch', '-q', 'origin'], undefined, t.key)
   const head = await run($, ['git', '-C', checkout, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
   const base = head.exitCode === 0 ? head.stdout.trim() : 'origin/main'
   await run($, ['git', '-C', checkout, 'worktree', 'remove', '--force', work])
-  const added = await run($, ['git', '-C', checkout, 'worktree', 'add', '--detach', work, base])
+  const added = await runLogged($, 'draft', ['git', '-C', checkout, 'worktree', 'add', '--detach', work, base], undefined, t.key)
   if (added.exitCode !== 0) {
     await save($, { ...t, status: 'failed', error: added.stderr.trim().split('\n').pop() })
     return
@@ -147,10 +195,12 @@ async function startDraft($: Engine, t: Tracked): Promise<void> {
   const result = `${dir}/results/${slug(t.key)}.json`
   const drafting: Tracked = { ...t, status: 'drafting', checkout, work, base, startedAt: Date.now() }
   await save($, drafting)
-  spawnWriter(drafting, result, '', $)
+  await startWriter($, drafting, result, '')
 }
 
-function spawnWriter(t: Tracked, result: string, note: string, $: Engine): void {
+// Drafting runs only as a subagent of a session. When the engine refuses or fails to start it (as it may from a timer),
+// the draft waits with `pendingStart` and the next turn, `/docs-watch` or session start tries again; each refusal is logged.
+async function startWriter($: Engine, t: Tracked, result: string, note: string): Promise<void> {
   const lines = [
     'Use the docs-watch:update-docs skill (call the Skill tool with it) and follow it exactly.',
     `PR: ${t.repo}#${t.number} ("${t.title ?? ''}").`,
@@ -161,21 +211,53 @@ function spawnWriter(t: Tracked, result: string, note: string, $: Engine): void 
     lines.push(`Note: ${note}`)
   }
   const prompt = lines.join('\n')
-  $.agent.spawn({ prompt, subagentType: 'general-purpose', description: `Docs after ${t.key}`, cwd: t.work }).catch(() => undefined)
+  let problem = ''
+  try {
+    const started = await $.agent.spawn({ prompt, subagentType: 'general-purpose', description: `Docs after ${t.key}`, cwd: t.work })
+    if ('deny' in started && started.deny) {
+      problem = `subagent refused: ${JSON.stringify(started.deny)}`
+    } else if (!started.agentId) {
+      problem = 'subagent did not start (no agent id)'
+    } else {
+      await save($, { ...t, agentId: started.agentId, pendingStart: undefined, note: undefined, startedAt: Date.now() })
+      return
+    }
+  } catch (error) {
+    problem = `subagent failed to start: ${describe(error)}`
+  }
+  await logError($, 'draft', problem, t.key)
+  await save($, { ...t, pendingStart: true, note: note || undefined, error: problem })
+}
+
+// Starts the drafts that are waiting for a session to take them.
+async function startPending($: Engine): Promise<void> {
+  try {
+    const dir = await stateDir($)
+    for (const t of await allTracked($)) {
+      if (t.status === 'drafting' && t.pendingStart) {
+        await startWriter($, t, `${dir}/results/${slug(t.key)}.json`, t.note ?? '')
+      }
+    }
+  } catch (error) {
+    await logError($, 'start pending', error)
+  }
 }
 
 async function checkDraft($: Engine, t: Tracked): Promise<void> {
   const dir = await stateDir($)
-  const result = await readResult($, `${dir}/results/${slug(t.key)}.json`)
+  const result = await readResult($, `${dir}/results/${slug(t.key)}.json`, t.key)
   if (!result) {
-    if (Date.now() - (t.startedAt ?? 0) > DRAFT_TIMEOUT_MS) {
-      await save($, { ...t, status: 'failed', error: 'the draft did not finish' })
+    if (!t.pendingStart && Date.now() - (t.startedAt ?? 0) > DRAFT_TIMEOUT_MS) {
+      const where = t.agentId ? ` (agent ${t.agentId})` : ''
+      const error = `the draft wrote no result file within ${DRAFT_TIMEOUT_MS / 60000} minutes${where}`
+      await logError($, 'draft', error, t.key)
+      await save($, { ...t, status: 'failed', error })
     }
     return
   }
   const work = t.work ?? ''
-  await run($, ['git', '-C', work, 'add', '-A'])
-  const changes = await run($, ['git', '-C', work, 'diff', '--cached'])
+  await runLogged($, 'draft', ['git', '-C', work, 'add', '-A'], undefined, t.key)
+  const changes = await runLogged($, 'draft', ['git', '-C', work, 'diff', '--cached'], undefined, t.key)
   const text = changes.stdout
   if (text.trim() === '') {
     await removeWorktree($, t)
@@ -193,7 +275,17 @@ async function onlyDocsTestsCi(files: string[]): Promise<boolean> {
 
 // One poll: track the person's open PRs in every repository a session registered, and move each tracked PR on.
 async function tick($: Engine): Promise<void> {
-  if ((await setupProblem($)) !== null) {
+  try {
+    await poll($)
+  } catch (error) {
+    await logError($, 'poll', error)
+  }
+}
+
+async function poll($: Engine): Promise<void> {
+  const problem = await setupProblem($)
+  if (problem !== null) {
+    await logError($, 'setup', problem)
     return
   }
   const now = Date.now()
@@ -203,11 +295,16 @@ async function tick($: Engine): Promise<void> {
   const keys = await $.store.keys()
   const repos = keys.filter((k) => k.startsWith('repo:')).map((k) => k.slice('repo:'.length))
   for (const repo of repos) {
-    const open = await run($, ['gh', 'pr', 'list', '--repo', repo, '--author', '@me', '--state', 'open', '--json', 'number,title,url'])
+    const open = await runLogged($, 'list PRs', ['gh', 'pr', 'list', '--repo', repo, '--author', '@me', '--state', 'open', '--json', 'number,title,url'])
     if (open.exitCode !== 0) {
       continue
     }
-    for (const pr of JSON.parse(open.stdout) as { number: number; title: string; url: string }[]) {
+    const prs = parseJson<{ number: number; title: string; url: string }[]>(open.stdout)
+    if (prs === null) {
+      await logError($, 'list PRs', `gh returned something that is not JSON for ${repo}: ${open.stdout.slice(0, 200)}`)
+      continue
+    }
+    for (const pr of prs) {
       const key = `${repo}#${pr.number}`
       if (!(await $.store.get(`pr:${key}`))) {
         await save($, { key, repo, number: pr.number, title: pr.title, url: pr.url, status: 'open' })
@@ -216,11 +313,15 @@ async function tick($: Engine): Promise<void> {
   }
   for (const t of await allTracked($)) {
     if (t.status === 'open') {
-      const view = await run($, ['gh', 'pr', 'view', String(t.number), '--repo', t.repo, '--json', 'state,files'])
+      const view = await runLogged($, 'check PR', ['gh', 'pr', 'view', String(t.number), '--repo', t.repo, '--json', 'state,files'], undefined, t.key)
       if (view.exitCode !== 0) {
         continue
       }
-      const info = JSON.parse(view.stdout) as { state: string; files: { path: string }[] }
+      const info = parseJson<{ state: string; files: { path: string }[] }>(view.stdout)
+      if (info === null) {
+        await logError($, 'check PR', `gh returned something that is not JSON: ${view.stdout.slice(0, 200)}`, t.key)
+        continue
+      }
       if (info.state === 'CLOSED') {
         await save($, { ...t, status: 'closed' })
       } else if (info.state === 'MERGED') {
@@ -243,7 +344,7 @@ async function approve($: Engine, t: Tracked): Promise<void> {
   const branch = `docs/after-pr-${t.number}`
   const base = (t.base ?? 'origin/main').replace(/^origin\//, '')
   const title = `docs: update after #${t.number}`
-  const changed = await run($, ['git', '-C', work, 'diff', '--cached', '--name-only'])
+  const changed = await runLogged($, 'approve', ['git', '-C', work, 'diff', '--cached', '--name-only'], undefined, t.key)
   const files = changed.stdout.trim().split('\n').filter(Boolean).map((f) => `- \`${f}\``).join('\n')
   const body = `Documentation update after ${t.url ?? `#${t.number}`}.\n\n${t.summary ?? ''}\n\nChanged:\n${files}`
   const steps: string[][] = [
@@ -253,14 +354,14 @@ async function approve($: Engine, t: Tracked): Promise<void> {
     ['git', '-C', work, 'push', '-u', 'origin', branch],
   ]
   for (const step of steps) {
-    const done = await run($, step)
+    const done = await runLogged($, 'approve', step, undefined, t.key)
     if (done.exitCode !== 0) {
       await save($, { ...t, status: 'failed', error: `${step.slice(3).join(' ')}: ${lastLine(done.stderr)}` })
       await notify($, `Docs PR for ${t.key} failed: ${lastLine(done.stderr)}`)
       return
     }
   }
-  const pr = await run($, ['gh', 'pr', 'create', '--repo', t.repo, '--base', base, '--head', branch, '--title', title, '--body', body], work)
+  const pr = await runLogged($, 'approve', ['gh', 'pr', 'create', '--repo', t.repo, '--base', base, '--head', branch, '--title', title, '--body', body], work, t.key)
   if (pr.exitCode !== 0) {
     await save($, { ...t, status: 'failed', error: `gh pr create: ${lastLine(pr.stderr)}` })
     await notify($, `Docs PR for ${t.key} failed: ${lastLine(pr.stderr)}`)
@@ -277,12 +378,12 @@ async function redo($: Engine, t: Tracked, note: string): Promise<void> {
   const work = t.work ?? ''
   const dir = await stateDir($)
   const result = `${dir}/results/${slug(t.key)}.json`
-  await run($, ['git', '-C', work, 'reset', '-q', '--hard'])
-  await run($, ['git', '-C', work, 'clean', '-fdq'])
-  await run($, ['rm', '-f', result])
+  await runLogged($, 'redo', ['git', '-C', work, 'reset', '-q', '--hard'], undefined, t.key)
+  await runLogged($, 'redo', ['git', '-C', work, 'clean', '-fdq'], undefined, t.key)
+  await runLogged($, 'redo', ['rm', '-f', result], undefined, t.key)
   const drafting: Tracked = { ...t, status: 'drafting', startedAt: Date.now(), diff: undefined, summary: undefined }
   await save($, drafting)
-  spawnWriter(drafting, result, note, $)
+  await startWriter($, drafting, result, note)
   $.ui.toast(`Redrafting the docs for ${t.key}…`)
 }
 
@@ -300,25 +401,35 @@ export const register: Register = (on) => {
       $.ui.toast(problem)
     }
     await registerRepo($)
+    await startPending($)
     const found = await visible($)
     await update($, shown, () => found)
+    const log = await recentErrors($)
+    await update($, errors, () => log)
     $.clock.after(FIRST_TICK_MS, async () => {
       await tick($)
       const latest = await visible($)
       await update($, shown, () => latest)
+      const log = await recentErrors($)
+      await update($, errors, () => log)
     })
     $.clock.every(TICK_MS, async () => {
       await tick($)
       const latest = await visible($)
       await update($, shown, () => latest)
+      const log = await recentErrors($)
+      await update($, errors, () => log)
     })
 
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
+    await startPending($)
     const found = await visible($)
     await update($, shown, () => found)
+    const log = await recentErrors($)
+    await update($, errors, () => log)
 
     return next(e)
   })
@@ -335,10 +446,15 @@ export const register: Register = (on) => {
       await redo($, target, note.trim())
       const latest = await visible($)
       await update($, shown, () => latest)
+      const log = await recentErrors($)
+      await update($, errors, () => log)
       return { text: `Redrafting ${key}.` }
     }
+    await startPending($)
     const found = await visible($)
     await update($, shown, () => found)
+    const log = await recentErrors($)
+    await update($, errors, () => log)
     await $.ui.open({ id: PANE, title: 'Docs updates' })
 
     return { text: 'Docs updates opened.' }
@@ -386,8 +502,32 @@ export const register: Register = (on) => {
     const Input = 'Input' in elements ? elements.Input : null
     const current = (await read($, shown)) ?? []
     const open = await read($, diff)
+    const log = (await read($, errors)) ?? []
+    const errorList = log.length > 0 && (
+      <Box key="errors" flexDirection="column">
+        <Text bold>Recent errors</Text>
+        {log.map((entry) => (
+          <Text key={`${entry.at}-${entry.where}`} color="red">
+            {`${new Date(entry.at).toLocaleString()}  ${entry.where}${entry.key ? ` ${entry.key}` : ''}: ${entry.message}`}
+          </Text>
+        ))}
+        <Button
+          key="clear-log"
+          label="Clear errors"
+          onPress={async () => {
+            await $.store.set(LOG_KEY, [])
+            await update($, errors, () => [])
+          }}
+        />
+      </Box>
+    )
     if (current.length === 0) {
-      return <Text dimColor>No documentation updates waiting.</Text>
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>No documentation updates waiting.</Text>
+          {errorList}
+        </Box>
+      )
     }
 
     return (
@@ -396,6 +536,7 @@ export const register: Register = (on) => {
           <Box key={t.key} flexDirection="column">
             <Text bold>{`${t.key}: ${t.title ?? ''}`}</Text>
             <Text dimColor>{t.summary ?? ''}</Text>
+            {t.status === 'drafting' && t.pendingStart && <Text color="yellow">{`Waiting to start the draft: ${t.error ?? ''}`}</Text>}
             {t.status === 'approving' && <Text>Opening the PR…</Text>}
             {t.status === 'pr-open' && <Text>{`PR: ${t.prUrl}`}</Text>}
             {t.status === 'failed' && <Text color="red">{`Failed: ${t.error ?? ''}`}</Text>}
@@ -405,7 +546,12 @@ export const register: Register = (on) => {
                   key={`approve-${t.key}`}
                   label="Approve"
                   onPress={async () => {
-                    await approve($, t)
+                    try {
+                      await approve($, t)
+                    } catch (error) {
+                      await logError($, 'approve', error, t.key)
+                      $.ui.toast(`Approve failed for ${t.key}: ${describe(error)}`)
+                    }
                     const latest = await visible($)
                     await update($, shown, () => latest)
                   }}
@@ -422,7 +568,12 @@ export const register: Register = (on) => {
                   key={`dismiss-${t.key}`}
                   label="Dismiss"
                   onPress={async () => {
-                    await dismiss($, t)
+                    try {
+                      await dismiss($, t)
+                    } catch (error) {
+                      await logError($, 'dismiss', error, t.key)
+                      $.ui.toast(`Dismiss failed for ${t.key}: ${describe(error)}`)
+                    }
                     const latest = await visible($)
                     await update($, shown, () => latest)
                   }}
@@ -439,7 +590,12 @@ export const register: Register = (on) => {
                   if (value.trim() === '') {
                     return
                   }
-                  await redo($, t, value.trim())
+                  try {
+                    await redo($, t, value.trim())
+                  } catch (error) {
+                    await logError($, 'redo', error, t.key)
+                    $.ui.toast(`Redo failed for ${t.key}: ${describe(error)}`)
+                  }
                   const latest = await visible($)
                   await update($, shown, () => latest)
                 }}
@@ -459,6 +615,7 @@ export const register: Register = (on) => {
             {open && open.key === t.key && <Markdown text={`\`\`\`diff\n${open.text}\n\`\`\``} />}
           </Box>
         ))}
+        {errorList}
       </Box>
     )
   })

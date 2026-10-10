@@ -25,10 +25,15 @@ export type Tracked = {
   diff?: string
   prUrl?: string
   error?: string
+  agentId?: string
+  pendingStart?: boolean
+  note?: string
 }
+
+export type LogEntry = { at: number; where: string; message: string; key?: string }
 
 declare module 'claude-code' {
   interface PluginState {
-    'docs-watch': { shown: Tracked[] | null; diff: { key: string; text: string } | null; setup: string | null }
+    'docs-watch': { shown: Tracked[] | null; diff: { key: string; text: string } | null; setup: string | null; errors: LogEntry[] | null }
   }
 }
