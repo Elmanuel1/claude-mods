@@ -19,6 +19,7 @@ export type Tracked = {
   url?: string
   checkout?: string
   work?: string
+  base?: string
   startedAt?: number
   summary?: string
   diff?: string

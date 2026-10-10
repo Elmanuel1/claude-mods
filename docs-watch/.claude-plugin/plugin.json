@@ -1,6 +1,6 @@
 {
   "name": "docs-watch",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "When one of your PRs merges, drafts the documentation update and opens it as a PR once you approve",
   "types": "./types/index.d.ts",
   "author": {

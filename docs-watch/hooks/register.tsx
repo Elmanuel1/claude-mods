@@ -145,9 +145,23 @@ async function startDraft($: Engine, t: Tracked): Promise<void> {
     return
   }
   const result = `${dir}/results/${slug(t.key)}.json`
-  await save($, { ...t, status: 'drafting', checkout, work, startedAt: Date.now() })
-  const prompt = `Repository ${t.repo}, merged pull request #${t.number} ("${t.title ?? ''}"). Draft the documentation update in this worktree (${work}). Write your result file to ${result}.`
-  $.agent.spawn({ prompt, subagentType: 'docs-watch:docs-writer', description: `Docs after ${t.key}`, cwd: work }).catch(() => undefined)
+  const drafting: Tracked = { ...t, status: 'drafting', checkout, work, base, startedAt: Date.now() }
+  await save($, drafting)
+  spawnWriter(drafting, result, '', $)
+}
+
+function spawnWriter(t: Tracked, result: string, note: string, $: Engine): void {
+  const lines = [
+    'Use the docs-watch:update-docs skill (call the Skill tool with it) and follow it exactly.',
+    `PR: ${t.repo}#${t.number} ("${t.title ?? ''}").`,
+    `Worktree: ${t.work}`,
+    `Result file: ${result}`,
+  ]
+  if (note) {
+    lines.push(`Note: ${note}`)
+  }
+  const prompt = lines.join('\n')
+  $.agent.spawn({ prompt, subagentType: 'general-purpose', description: `Docs after ${t.key}`, cwd: t.work }).catch(() => undefined)
 }
 
 async function checkDraft($: Engine, t: Tracked): Promise<void> {
@@ -171,21 +185,6 @@ async function checkDraft($: Engine, t: Tracked): Promise<void> {
   const summary = typeof result.summary === 'string' ? result.summary : 'Documentation update'
   await save($, { ...t, status: 'suggested', summary, diff: text.slice(0, DIFF_LIMIT) })
   await notify($, `${t.key} merged: docs update suggested. Review with /docs-watch.`)
-}
-
-async function checkApproval($: Engine, t: Tracked): Promise<void> {
-  const dir = await stateDir($)
-  const result = await readResult($, `${dir}/results/${slug(t.key)}.pr.json`)
-  if (!result) {
-    return
-  }
-  if (typeof result.url === 'string') {
-    await removeWorktree($, t)
-    await save($, { ...t, status: 'pr-open', prUrl: result.url })
-    await notify($, `Docs PR opened: ${result.url}`)
-    return
-  }
-  await save($, { ...t, status: 'failed', error: String(result.error ?? 'the PR was not opened') })
 }
 
 async function onlyDocsTestsCi(files: string[]): Promise<boolean> {
@@ -231,25 +230,60 @@ async function tick($: Engine): Promise<void> {
       }
     } else if (t.status === 'drafting') {
       await checkDraft($, t)
-    } else if (t.status === 'approving') {
-      await checkApproval($, t)
     }
   }
 }
 
-async function approve($: Engine, t: Tracked, note: string): Promise<void> {
-  const dir = await stateDir($)
-  const result = `${dir}/results/${slug(t.key)}.pr.json`
+const lastLine = (text: string) => text.trim().split('\n').pop() ?? ''
+
+// Commits the draft on its own branch, pushes it and opens the pull request against the branch it was drafted from.
+async function approve($: Engine, t: Tracked): Promise<void> {
   await save($, { ...t, status: 'approving' })
+  const work = t.work ?? ''
   const branch = `docs/after-pr-${t.number}`
-  const prompt = [
-    `Repository ${t.repo}; merged pull request #${t.number} (${t.url ?? ''}).`,
-    `Branch to create: ${branch}. Summary: ${t.summary ?? ''}.`,
-    note ? `Note from the person, apply it first: ${note}` : 'No note from the person.',
-    `Worktree: ${t.work}. Write your result file to ${result}.`,
-  ].join('\n')
-  $.agent.spawn({ prompt, subagentType: 'docs-watch:docs-pr', description: `Docs PR after ${t.key}`, cwd: t.work }).catch(() => undefined)
-  await notify($, `Opening the docs PR for ${t.key}…`)
+  const base = (t.base ?? 'origin/main').replace(/^origin\//, '')
+  const title = `docs: update after #${t.number}`
+  const changed = await run($, ['git', '-C', work, 'diff', '--cached', '--name-only'])
+  const files = changed.stdout.trim().split('\n').filter(Boolean).map((f) => `- \`${f}\``).join('\n')
+  const body = `Documentation update after ${t.url ?? `#${t.number}`}.\n\n${t.summary ?? ''}\n\nChanged:\n${files}`
+  const steps: string[][] = [
+    ['git', '-C', work, 'checkout', '-b', branch],
+    ['git', '-C', work, 'add', '-A'],
+    ['git', '-C', work, 'commit', '-m', title, '-m', t.summary ?? ''],
+    ['git', '-C', work, 'push', '-u', 'origin', branch],
+  ]
+  for (const step of steps) {
+    const done = await run($, step)
+    if (done.exitCode !== 0) {
+      await save($, { ...t, status: 'failed', error: `${step.slice(3).join(' ')}: ${lastLine(done.stderr)}` })
+      await notify($, `Docs PR for ${t.key} failed: ${lastLine(done.stderr)}`)
+      return
+    }
+  }
+  const pr = await run($, ['gh', 'pr', 'create', '--repo', t.repo, '--base', base, '--head', branch, '--title', title, '--body', body], work)
+  if (pr.exitCode !== 0) {
+    await save($, { ...t, status: 'failed', error: `gh pr create: ${lastLine(pr.stderr)}` })
+    await notify($, `Docs PR for ${t.key} failed: ${lastLine(pr.stderr)}`)
+    return
+  }
+  const url = lastLine(pr.stdout)
+  await removeWorktree($, t)
+  await save($, { ...t, status: 'pr-open', prUrl: url })
+  await notify($, `Docs PR opened: ${url}`)
+}
+
+// Starts the draft again from a clean worktree, with the person's note.
+async function redo($: Engine, t: Tracked, note: string): Promise<void> {
+  const work = t.work ?? ''
+  const dir = await stateDir($)
+  const result = `${dir}/results/${slug(t.key)}.json`
+  await run($, ['git', '-C', work, 'reset', '-q', '--hard'])
+  await run($, ['git', '-C', work, 'clean', '-fdq'])
+  await run($, ['rm', '-f', result])
+  const drafting: Tracked = { ...t, status: 'drafting', startedAt: Date.now(), diff: undefined, summary: undefined }
+  await save($, drafting)
+  spawnWriter(drafting, result, note, $)
+  $.ui.toast(`Redrafting the docs for ${t.key}…`)
 }
 
 async function dismiss($: Engine, t: Tracked): Promise<void> {
@@ -289,7 +323,20 @@ export const register: Register = (on) => {
     return next(e)
   })
 
-  on('command.run', { command: 'docs-watch' }, async ($) => {
+  // `/docs-watch redo <owner/repo#number> <note>` redrafts one suggestion with a note; anything else opens the list.
+  on('command.run', { command: 'docs-watch' }, async ($, e) => {
+    const redoArgs = /^redo\s+(\S+)\s+([\s\S]+)$/.exec(e.args.trim())
+    if (redoArgs) {
+      const [, key = "", note = ""] = redoArgs
+      const target = (await $.store.get(`pr:${key}`)) as Tracked | undefined
+      if (!target || target.status !== 'suggested') {
+        return { text: `No suggestion waiting for ${key}.` }
+      }
+      await redo($, target, note.trim())
+      const latest = await visible($)
+      await update($, shown, () => latest)
+      return { text: `Redrafting ${key}.` }
+    }
     const found = await visible($)
     await update($, shown, () => found)
     await $.ui.open({ id: PANE, title: 'Docs updates' })
@@ -334,7 +381,9 @@ export const register: Register = (on) => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Markdown, Text } = $.ui.resolve(e)
+    const elements = $.ui.resolve(e)
+    const { Box, Button, Markdown, Text } = elements
+    const Input = 'Input' in elements ? elements.Input : null
     const current = (await read($, shown)) ?? []
     const open = await read($, diff)
     if (current.length === 0) {
@@ -356,7 +405,7 @@ export const register: Register = (on) => {
                   key={`approve-${t.key}`}
                   label="Approve"
                   onPress={async () => {
-                    await approve($, t, '')
+                    await approve($, t)
                     const latest = await visible($)
                     await update($, shown, () => latest)
                   }}
@@ -379,6 +428,22 @@ export const register: Register = (on) => {
                   }}
                 />
               </Box>
+            )}
+            {t.status === 'suggested' && Input && (
+              <Input
+                key={`note-${t.key}`}
+                label="Redo with a note: "
+                placeholder="e.g. also update the README"
+                submitLabel="redo"
+                onSubmit={async (value: string) => {
+                  if (value.trim() === '') {
+                    return
+                  }
+                  await redo($, t, value.trim())
+                  const latest = await visible($)
+                  await update($, shown, () => latest)
+                }}
+              />
             )}
             {(t.status === 'pr-open' || t.status === 'failed') && (
               <Button
