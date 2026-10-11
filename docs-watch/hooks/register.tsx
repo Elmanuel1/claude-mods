@@ -237,6 +237,18 @@ async function tick($: Engine): Promise<void> {
   }
 }
 
+// A press returns at once and the work runs after it, so the surface never waits on git, an agent spawn or the store.
+function inBackground($: Engine, action: string, work: () => Promise<void>): void {
+  void work().catch((error) => $.ui.toast(`${action} failed: ${error instanceof Error ? error.message : String(error)}`))
+}
+
+// Approve, dismiss and clear change the list before their slow work; the next refresh shows the real state.
+async function showStatus($: Engine, t: Tracked, status: Tracked['status'] | null): Promise<void> {
+  await update($, shown, (current) =>
+    (current ?? []).flatMap((item) => (item.key !== t.key ? [item] : status === null ? [] : [{ ...item, status }])),
+  )
+}
+
 async function approve($: Engine, t: Tracked, note: string): Promise<void> {
   const dir = await stateDir($)
   const result = `${dir}/results/${slug(t.key)}.pr.json`
@@ -312,14 +324,16 @@ export const register: Register = (on) => {
           <Button
             key="recheck"
             label="Check again"
-            onPress={async () => {
-              const again = await setupProblem($)
-              await update($, setup, () => again)
-              if (again === null) {
-                await registerRepo($)
-                $.ui.toast('docs-watch is set up.')
-              }
-            }}
+            onPress={() =>
+              inBackground($, 'Check', async () => {
+                const again = await setupProblem($)
+                await update($, setup, () => again)
+                if (again === null) {
+                  await registerRepo($)
+                  $.ui.toast('docs-watch is set up.')
+                }
+              })
+            }
           />
         </Box>
       )
@@ -355,28 +369,36 @@ export const register: Register = (on) => {
                 <Button
                   key={`approve-${t.key}`}
                   label="Approve"
-                  onPress={async () => {
-                    await approve($, t, '')
-                    const latest = await visible($)
-                    await update($, shown, () => latest)
-                  }}
+                  onPress={() =>
+                    inBackground($, 'Approve', async () => {
+                      await showStatus($, t, 'approving')
+                      await approve($, t, '')
+                      const latest = await visible($)
+                      await update($, shown, () => latest)
+                    })
+                  }
                 />
                 <Button
                   key={`diff-${t.key}`}
                   label={open && open.key === t.key ? 'Hide diff' : 'Diff'}
-                  onPress={async () => {
-                    const isOpen = open !== null && open.key === t.key
-                    await update($, diff, () => (isOpen ? null : { key: t.key, text: t.diff ?? '' }))
-                  }}
+                  onPress={() =>
+                    inBackground($, 'Diff', async () => {
+                      const isOpen = open !== null && open.key === t.key
+                      await update($, diff, () => (isOpen ? null : { key: t.key, text: t.diff ?? '' }))
+                    })
+                  }
                 />
                 <Button
                   key={`dismiss-${t.key}`}
                   label="Dismiss"
-                  onPress={async () => {
-                    await dismiss($, t)
-                    const latest = await visible($)
-                    await update($, shown, () => latest)
-                  }}
+                  onPress={() =>
+                    inBackground($, 'Dismiss', async () => {
+                      await showStatus($, t, null)
+                      await dismiss($, t)
+                      const latest = await visible($)
+                      await update($, shown, () => latest)
+                    })
+                  }
                 />
               </Box>
             )}
@@ -384,11 +406,14 @@ export const register: Register = (on) => {
               <Button
                 key={`clear-${t.key}`}
                 label="Clear"
-                onPress={async () => {
-                  await dismiss($, t)
-                  const latest = await visible($)
-                  await update($, shown, () => latest)
-                }}
+                onPress={() =>
+                  inBackground($, 'Clear', async () => {
+                    await showStatus($, t, null)
+                    await dismiss($, t)
+                    const latest = await visible($)
+                    await update($, shown, () => latest)
+                  })
+                }
               />
             )}
             {open && open.key === t.key && <Markdown text={`\`\`\`diff\n${open.text}\n\`\`\``} />}
