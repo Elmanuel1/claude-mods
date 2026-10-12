@@ -25,10 +25,20 @@ missing or `gh` is not signed in, a line above the prompt says which step fixes 
    documentation files there, following the repository's own `CLAUDE.md`, `AGENTS.md` or `CONTRIBUTING.md`. Nothing is
    committed.
 4. **Review.** A line above the prompt says "N docs update(s) suggested" in every open session, with a desktop
-   notification on macOS. `/docs-watch` (or Review) opens the list: the summary, the diff, **Approve** and **Dismiss**.
-5. **Pull request.** Approve runs the `docs-watch:docs-pr` agent: it commits on `docs/after-pr-<number>`, pushes, and runs
-   `gh pr create`. Any hook you have on `gh pr create` reviews it as usual. You get the link as a toast and a
-   notification. It never pushes to the default branch and never merges.
+   notification on macOS. `/docs-watch` (or Review) opens the list: the summary, the diff, **Approve**, **Dismiss**, and
+   **Approve all** when more than one is waiting.
+5. **Approve collects, Push ships.** Approve commits the draft and adds it to one branch per repository,
+   `docs/updates`, without pushing. The line above the prompt then says "N approved, not pushed" with a **Push** button,
+   and a reminder comes every hour while anything approved is not pushed. Push runs the `docs-watch:docs-pr` agent once:
+   it pushes `docs/updates` and opens one pull request for every approved update, or updates the one already open. Any
+   hook you have on `gh pr create` reviews it as usual. It never pushes to the default branch and never merges.
+6. **Keeping up.** The 5-minute check also follows the docs pull request: once it merges (squash or merge), its updates
+   leave the list and the branch starts again from the default branch; if it is closed unmerged, its updates go back to
+   approved for the next Push. While nothing is pushed, the branch is rebuilt whenever the default branch moves; an
+   update that no longer applies shows as failed.
+7. **Notifications.** With `terminal-notifier` installed (`brew install terminal-notifier`), clicking a notification
+   brings Claude to the front, where the line above the prompt has the action, and a newer notification replaces the
+   last. Without it, the notification names the step (open Claude and run `/docs-watch`).
 
 ## Limits
 
