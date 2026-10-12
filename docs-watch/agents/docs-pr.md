@@ -10,9 +10,14 @@ the branch covers, the branch's open pull request if it has one, and the file to
 
 1. Push the branch: `git push --force-with-lease -u origin docs/updates`. The branch is rebuilt on the latest default
    branch between pushes, so a force push with lease is expected. Never push to the default branch.
-2. If the task names an open pull request, update its body with `gh pr edit` so it lists every merged pull request the
-   branch covers. Otherwise open one against the default branch with `gh pr create` (start the command with
-   `cd <this worktree> && `): title `docs: updates after merged pull requests`, body listing each merged pull request
-   with its link and what its commit changed in the docs. If a hook or check refuses the command with findings, fix
+2. Write a title that says what the documentation changes cover, under 72 characters, read from the branch's commit
+   subjects (`git log --format=%s <default branch>..HEAD`). One commit: use its subject. Several: `docs: ` and the main
+   topics, for example `docs: Jackson 3 config and deprecated-API build failures`. Never a title that only names PR
+   numbers or says "update" without the subject (BAD: `docs: update after #858`, `docs: updates after merged pull
+   requests`).
+3. If the task names an open pull request, update it with `gh pr edit`: the title from step 2 and a body listing every
+   merged pull request the branch covers. Otherwise open one against the default branch with `gh pr create` (start the
+   command with `cd <this worktree> && `): the title from step 2, body listing each merged pull request with its link and
+   what its commit changed in the docs. If a hook or check refuses the command with findings, fix
    them, commit, push and run it again; never bypass a hook.
-3. Write the result file named in the task as JSON: `{"url": "<pull request url>"}`, or `{"error": "<what failed>"}`.
+4. Write the result file named in the task as JSON: `{"url": "<pull request url>"}`, or `{"error": "<what failed>"}`.

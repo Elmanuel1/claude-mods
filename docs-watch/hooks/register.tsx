@@ -285,6 +285,12 @@ async function startDraft($: Engine, t: Tracked): Promise<void> {
   $.agent.spawn({ prompt, subagentType: 'docs-watch:docs-writer', description: `Docs after ${t.key}`, cwd: work }).catch(() => undefined)
 }
 
+// For a draft made before the writer returned a title: the merged PR's title without its own type prefix.
+function docsTitleFrom(t: Tracked): string {
+  const subject = (t.title ?? `pull request #${t.number}`).replace(/^\w+(\([^)]*\))?!?:\s*/, '')
+  return `docs: cover ${subject}`.slice(0, 72)
+}
+
 async function checkDraft($: Engine, t: Tracked): Promise<void> {
   const dir = await stateDir($)
   const result = await readResult($, `${dir}/results/${slug(t.key)}.json`)
@@ -304,7 +310,8 @@ async function checkDraft($: Engine, t: Tracked): Promise<void> {
     return
   }
   const summary = typeof result.summary === 'string' ? result.summary : 'Documentation update'
-  await save($, { ...t, status: 'suggested', summary, diff: text.slice(0, DIFF_LIMIT) })
+  const docsTitle = typeof result.title === 'string' && result.title.startsWith('docs: ') ? result.title : docsTitleFrom(t)
+  await save($, { ...t, status: 'suggested', summary, docsTitle, diff: text.slice(0, DIFF_LIMIT) })
   await notify($, `${t.key} merged: docs update suggested. Review with /docs-watch.`)
 }
 
@@ -450,7 +457,8 @@ async function approve($: Engine, t: Tracked): Promise<void> {
     return
   }
   await run($, ['git', '-C', t.work, 'add', '-A'])
-  const committed = await run($, ['git', '-C', t.work, 'commit', '-q', '-m', `docs: update after #${t.number}`, '-m', t.summary ?? ''])
+  const body = `${t.summary ?? ''}\n\nAfter #${t.number}${t.url ? ` (${t.url})` : ''}.`
+  const committed = await run($, ['git', '-C', t.work, 'commit', '-q', '-m', t.docsTitle ?? docsTitleFrom(t), '-m', body])
   const head = await run($, ['git', '-C', t.work, 'rev-parse', 'HEAD'])
   if (committed.exitCode !== 0 || head.exitCode !== 0) {
     await save($, { ...t, status: 'failed', error: lastLine(committed) })
@@ -702,7 +710,8 @@ export const register: Register = (on) => {
         )}
         {current.map((t) => (
           <Box key={t.key} flexDirection="column">
-            <Text bold>{`${t.key}: ${t.title ?? ''}`}</Text>
+            <Text bold>{t.docsTitle ?? `${t.key}: ${t.title ?? ''}`}</Text>
+            {t.docsTitle && <Text dimColor>{`After ${t.key}: ${t.title ?? ''}`}</Text>}
             <Text dimColor>{t.summary ?? ''}</Text>
             {t.status === 'applying' && <Text>Approved, adding to the docs branch…</Text>}
             {t.status === 'resolving' && <Text>Resolving a conflict with another update…</Text>}

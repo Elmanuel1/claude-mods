@@ -26,6 +26,8 @@ export type Tracked = {
   work?: string
   startedAt?: number
   summary?: string
+  /** the docs commit subject the writer chose, e.g. `docs: document failing the build on removed APIs` */
+  docsTitle?: string
   diff?: string
   prUrl?: string
   error?: string

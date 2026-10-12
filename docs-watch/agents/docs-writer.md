@@ -18,5 +18,9 @@ file to write your result to.
    concept no page covers, in the place and shape the existing docs use. State the design as current fact; no history.
    Cite file paths for concrete claims where the docs already do.
 4. Do not touch code, tests or configuration. Do not commit, push or open a pull request.
-5. Write the result file named in the task as JSON: `{"summary": "<one sentence on what you changed, or nothing to change>",
-   "files": ["<path>", ...]}`. Write it even when nothing needed to change (an empty `files` list).
+5. Write the result file named in the task as JSON: `{"title": "<title>", "summary": "<one sentence on what you
+   changed, or nothing to change>", "files": ["<path>", ...]}`. Write it even when nothing needed to change (an empty
+   `files` list).
+   - `title` is the commit subject: `docs: ` and what the documentation now covers, in the imperative, under 72
+     characters. GOOD: `docs: document failing the build on APIs marked for removal`. BAD: `docs: update after #858`,
+     `docs: update documentation`. It names the subject matter, never only the PR number.
