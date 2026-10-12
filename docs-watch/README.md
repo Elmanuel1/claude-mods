@@ -27,18 +27,19 @@ missing or `gh` is not signed in, a line above the prompt says which step fixes 
 4. **Review.** A line above the prompt says "N docs update(s) suggested" in every open session, with a desktop
    notification on macOS. `/docs-watch` (or Review) opens the list: the summary, the diff, **Approve**, **Dismiss**, and
    **Approve all** when more than one is waiting.
-5. **Approve collects, Push ships.** Approve commits the draft and adds it to one branch per repository,
-   `docs/updates`, without pushing. The line above the prompt then says "N approved, not pushed" with a **Push** button,
-   and a reminder comes every hour while anything approved is not pushed. Push runs the `docs-watch:docs-pr` agent once:
-   it pushes `docs/updates` and opens one pull request for every approved update, or updates the one already open. Any
-   hook you have on `gh pr create` reviews it as usual. It never pushes to the default branch and never merges.
+5. **Approve ships.** Approve (or Approve all) commits the draft and queues it for one branch per repository,
+   `docs/updates`. Updates land on the branch one at a time; when one conflicts with an update already there, the
+   `docs-watch:docs-merge` agent resolves the doc files so both updates' content stays, and the queue carries on. Once
+   the queue is empty the `docs-watch:docs-pr` agent pushes the branch and opens one pull request for every approved
+   update, or updates the one already open; any hook you have on `gh pr create` reviews it as usual. The line above the
+   prompt then says "Docs PR updated" with **Open PR** and **Hide**; a failed push shows its reason with **Retry**. It
+   never pushes to the default branch and never merges: the pull request is where you review the combined change.
 6. **Keeping up.** The 5-minute check also follows the docs pull request: once it merges (squash or merge), its updates
    leave the list and the branch starts again from the default branch; if it is closed unmerged, its updates go back to
-   approved for the next Push. While nothing is pushed, the branch is rebuilt whenever the default branch moves; an
-   update that no longer applies shows as failed.
-7. **Notifications.** With `terminal-notifier` installed (`brew install terminal-notifier`), clicking a notification
-   brings Claude to the front, where the line above the prompt has the action, and a newer notification replaces the
-   last. Without it, the notification names the step (open Claude and run `/docs-watch`).
+   approved and are pushed again. While nothing is pushed, the branch is rebuilt whenever the default branch moves,
+   through the same queue, so a conflict with the new default branch is resolved the same way.
+7. **Notifications.** On macOS each step also posts a notification. With `terminal-notifier` installed
+   (`brew install terminal-notifier`), a newer one replaces the last instead of stacking.
 
 ## Limits
 

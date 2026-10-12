@@ -9,17 +9,19 @@ const FIRST_TICK_MS = 20 * 1000
 const DRAFT_TIMEOUT_MS = 45 * 60 * 1000
 const DIFF_LIMIT = 60000
 const PUSH_TIMEOUT_MS = 45 * 60 * 1000
-const REMIND_MS = 60 * 60 * 1000
-// One branch per repository collects every approved update, so many merged PRs ship as one docs PR.
+const PUSH_CHECK_MS = 15 * 1000
+// One branch per repository collects every approved update, so many merged PRs ship as one docs PR. Approving
+// pushes it; there is no separate push step.
 const BRANCH = 'docs/updates'
 const CLAUDE_APP = 'com.anthropic.claudefordesktop'
-const SHOWN: readonly Status[] = ['suggested', 'approved', 'pushed', 'approving', 'pr-open', 'failed']
+const SHOWN: readonly Status[] = ['suggested', 'applying', 'resolving', 'approved', 'pushed', 'approving', 'pr-open', 'failed']
 // A PR that touched only these needs no documentation update.
 const NO_DOCS_NEEDED = /(^|\/)docs?\/|\.mdx?$|(^|\/)(test|tests|__tests__|spec)\/|(Spec|Test)\.(groovy|java|kt)$|\.(test|spec)\.[cm]?[jt]sx?$|^\.github\/|^\.claude\//
 
 const shown = atom({ plugin: 'docs-watch', key: 'shown' } as const, null)
 const diff = atom({ plugin: 'docs-watch', key: 'diff' } as const, null)
 const setup = atom({ plugin: 'docs-watch', key: 'setup' } as const, null)
+const branches = atom({ plugin: 'docs-watch', key: 'branches' } as const, null)
 
 // This session's id for the poller lease: only one open session polls GitHub at a time.
 const me = Math.random().toString(36).slice(2)
@@ -173,30 +175,92 @@ async function ensureBranch($: Engine, repo: string, checkout: string): Promise<
   return added.exitCode === 0 ? work : null
 }
 
-async function replay($: Engine, branch: string, commit: string): Promise<boolean> {
+// A conflicting cherry-pick is left in progress for the docs-merge agent to resolve.
+async function replay($: Engine, branch: string, commit: string): Promise<'applied' | 'conflict'> {
   const picked = await run($, ['git', '-C', branch, 'cherry-pick', '--allow-empty', commit])
-  if (picked.exitCode === 0) {
-    return true
-  }
-  await run($, ['git', '-C', branch, 'cherry-pick', '--abort'])
-  return false
+  return picked.exitCode === 0 ? 'applied' : 'conflict'
 }
 
-// Rebuilds the branch on the latest default branch from the approvals still to ship, oldest first. An approval that no
-// longer applies is marked failed instead of being left half-applied. Returns the base commit it built on.
+async function picking($: Engine, branch: string): Promise<boolean> {
+  return (await run($, ['git', '-C', branch, 'rev-parse', '-q', '--verify', 'CHERRY_PICK_HEAD'])).exitCode === 0
+}
+
+// Restarts the branch from the latest default branch and queues the approvals still to ship to land again, through
+// the same queue as a new approval, so a conflict with the new main is resolved the same way. Returns the base commit.
 async function rebuild($: Engine, branch: string, checkout: string, keep: Tracked[]): Promise<string> {
-  if ((await run($, ['git', '-C', branch, 'status', '--porcelain'])).stdout.trim() !== '') {
+  if ((await picking($, branch)) || (await run($, ['git', '-C', branch, 'status', '--porcelain'])).stdout.trim() !== '') {
     return ''
   }
   await run($, ['git', '-C', checkout, 'fetch', '-q', 'origin'])
   const base = await defaultBase($, checkout)
   await run($, ['git', '-C', branch, 'reset', '-q', '--hard', base])
-  for (const t of [...keep].sort((a, b) => (a.approvedAt ?? 0) - (b.approvedAt ?? 0))) {
-    if (!t.commit || !(await replay($, branch, t.commit))) {
-      await save($, { ...t, status: 'failed', error: 'no longer applies on the latest main; clear it and it drafts again after the next merge' })
-    }
+  for (const t of keep) {
+    await save($, { ...t, status: 'applying' })
   }
   return (await run($, ['git', '-C', checkout, 'rev-parse', base])).stdout.trim()
+}
+
+// Lands approvals on the shared branch one at a time, oldest first. A conflict goes to the docs-merge agent and the
+// queue waits for it. Once nothing is left to land, the branch is pushed.
+async function applyNext($: Engine, repo: string): Promise<void> {
+  const checkout = (await $.store.get(`repo:${repo}`)) as string | undefined
+  const branch = checkout ? await ensureBranch($, repo, checkout) : null
+  if (!branch || (await picking($, branch))) {
+    return
+  }
+  for (;;) {
+    const mine = (await allTracked($)).filter((t) => t.repo === repo)
+    if (mine.some((t) => t.status === 'resolving')) {
+      return
+    }
+    const next = mine.filter((t) => t.status === 'applying').sort((a, b) => (a.approvedAt ?? 0) - (b.approvedAt ?? 0))[0]
+    if (!next) {
+      if (mine.some((t) => t.status === 'approved')) {
+        await requestPush($, repo)
+      }
+      return
+    }
+    if (next.commit && (await replay($, branch, next.commit)) === 'applied') {
+      await save($, { ...next, status: 'approved', landedAt: Date.now() })
+      continue
+    }
+    if (!next.commit) {
+      await save($, { ...next, status: 'failed', error: 'its commit is missing; clear it and it drafts again after the next merge' })
+      continue
+    }
+    await startResolve($, next, branch)
+    return
+  }
+}
+
+async function startResolve($: Engine, t: Tracked, branch: string): Promise<void> {
+  const result = `${await stateDir($)}/results/${slug(t.key)}.merge.json`
+  await run($, ['rm', '-f', result])
+  await save($, { ...t, status: 'resolving', startedAt: Date.now() })
+  const prompt = [
+    `Repository ${t.repo}. In this worktree (${branch}), branch ${BRANCH} has a cherry-pick in progress that conflicts:`,
+    `the documentation update after merged pull request #${t.number} ("${t.title ?? ''}"; ${t.summary ?? ''}) against updates`,
+    `already on the branch. Write your result file to ${result}.`,
+  ].join(' ')
+  $.agent.spawn({ prompt, subagentType: 'docs-watch:docs-merge', description: `Resolve docs conflict for ${t.key}`, cwd: branch }).catch(() => undefined)
+  await notify($, `Resolving a docs conflict for ${t.key}…`)
+}
+
+async function checkResolve($: Engine, t: Tracked): Promise<void> {
+  const branch = await branchWorktree($, t.repo)
+  const result = await readResult($, `${await stateDir($)}/results/${slug(t.key)}.merge.json`)
+  if (!result && Date.now() - (t.startedAt ?? 0) <= DRAFT_TIMEOUT_MS) {
+    return
+  }
+  if (result?.ok === true && !(await picking($, branch))) {
+    await save($, { ...t, status: 'approved', landedAt: Date.now() })
+  } else {
+    await run($, ['git', '-C', branch, 'cherry-pick', '--abort'])
+    const reason = result ? String(result.error ?? 'the conflict was not resolved') : 'the conflict was not resolved in time'
+    await save($, { ...t, status: 'failed', error: reason })
+    await notify($, `A docs conflict for ${t.key} could not be resolved: ${reason}`)
+  }
+  await applyNext($, t.repo)
 }
 
 async function startDraft($: Engine, t: Tracked): Promise<void> {
@@ -304,12 +368,13 @@ async function tick($: Engine): Promise<void> {
       await checkDraft($, t)
     } else if (t.status === 'approving') {
       await checkApproval($, t)
+    } else if (t.status === 'resolving') {
+      await checkResolve($, t)
     }
   }
   for (const repo of repos) {
     await checkBranch($, repo)
   }
-  await remind($)
 }
 
 // Moves a repository's shared branch on with GitHub: a push finishing, its PR merged or closed, and main moving while
@@ -340,6 +405,7 @@ async function checkBranch($: Engine, repo: string): Promise<void> {
     const keep = (await allTracked($)).filter((t) => t.repo === repo && t.status === 'approved')
     const baseSha = await rebuild($, branch, checkout, keep)
     await saveBranchState($, repo, { baseSha: baseSha || state.baseSha })
+    await applyNext($, repo)
     await notify($, prState === 'MERGED' ? `Docs PR merged for ${repo}.` : `Docs PR closed for ${repo}; its updates are back to approved.`)
     return
   }
@@ -350,17 +416,7 @@ async function checkBranch($: Engine, repo: string): Promise<void> {
     const baseSha = await rebuild($, branch, checkout, keep)
     await saveBranchState($, repo, { ...state, baseSha: baseSha || state.baseSha })
   }
-}
-
-// Only the session holding the poll lease gets here, so one reminder an hour reaches the person, not one per session.
-async function remind($: Engine): Promise<void> {
-  const approved = (await allTracked($)).filter((t) => t.status === 'approved').length
-  const last = ((await $.store.get('remindedAt')) as number | undefined) ?? 0
-  if (approved === 0 || Date.now() - last < REMIND_MS) {
-    return
-  }
-  await $.store.set('remindedAt', Date.now())
-  await notify($, `${approved} docs update(s) approved, not pushed. Push them from the line above the prompt.`)
+  await applyNext($, repo)
 }
 
 // A press returns at once and the work runs after it, so the surface never waits on git, an agent spawn or the store.
@@ -378,10 +434,15 @@ async function showStatus($: Engine, t: Tracked, status: Tracked['status'] | nul
 async function refreshShown($: Engine): Promise<void> {
   const latest = await visible($)
   await update($, shown, () => latest)
+  const states: Record<string, BranchState> = {}
+  for (const repo of await registeredRepos($)) {
+    states[repo] = await branchState($, repo)
+  }
+  await update($, branches, () => states)
 }
 
-// Commits the draft in its own worktree and replays the commit onto the shared branch. Nothing is pushed: Push ships
-// every approval at once. A ref keeps the commit alive after its worktree is removed, for later rebuilds.
+// Commits the draft in its own worktree and queues it to land on the shared branch (applyNext). A ref keeps the commit
+// alive after its worktree is removed, for later rebuilds.
 async function approve($: Engine, t: Tracked): Promise<void> {
   const branch = t.checkout ? await ensureBranch($, t.repo, t.checkout) : null
   if (!branch || !t.work || !t.checkout) {
@@ -397,12 +458,8 @@ async function approve($: Engine, t: Tracked): Promise<void> {
   }
   const commit = head.stdout.trim()
   await run($, ['git', '-C', t.checkout, 'update-ref', `refs/docs-watch/${slug(t.key)}`, commit])
-  if (!(await replay($, branch, commit))) {
-    await save($, { ...t, status: 'failed', error: 'conflicts with an update already approved; clear it and it drafts again after the next merge' })
-    return
-  }
   await removeWorktree($, t)
-  await save($, { ...t, status: 'approved', commit, approvedAt: Date.now() })
+  await save($, { ...t, status: 'applying', commit, approvedAt: Date.now() })
 }
 
 // One docs-pr run per repository pushes the shared branch and opens its PR, or updates the open one.
@@ -416,7 +473,7 @@ async function startPush($: Engine, repo: string): Promise<void> {
   const included = (await allTracked($)).filter((t) => t.repo === repo && (t.status === 'approved' || t.status === 'pushed'))
   const result = `${await stateDir($)}/results/push-${slug(repo)}.json`
   await run($, ['rm', '-f', result])
-  await saveBranchState($, repo, { ...state, pushing: true, pushStartedAt: Date.now() })
+  await saveBranchState($, repo, { ...state, pushing: true, pushStartedAt: Date.now(), pushAgain: false, lastError: undefined, announce: false })
   const prompt = [
     `Repository ${repo}. Branch ${BRANCH} in this worktree (${branch}) holds one commit per merged pull request:`,
     ...included.map((t) => `- #${t.number} ${t.title ?? ''} (${t.url ?? ''}): ${t.summary ?? ''}`),
@@ -427,35 +484,79 @@ async function startPush($: Engine, repo: string): Promise<void> {
   await notify($, `Pushing the docs updates for ${repo}…`)
 }
 
-async function pushAll($: Engine): Promise<void> {
-  const repos = new Set((await allTracked($)).filter((t) => t.status === 'approved').map((t) => t.repo))
-  for (const repo of repos) {
-    await startPush($, repo)
+// Approving ships at once: a push starts now, or right after the one already running.
+async function requestPush($: Engine, repo: string): Promise<void> {
+  const state = await branchState($, repo)
+  if (state.pushing) {
+    await saveBranchState($, repo, { ...state, pushAgain: true })
+    return
+  }
+  await startPush($, repo)
+}
+
+async function retryPush($: Engine): Promise<void> {
+  for (const repo of await registeredRepos($)) {
+    if ((await branchState($, repo)).lastError) {
+      await startPush($, repo)
+    }
   }
 }
 
-// An approval made while a push ran is not in what was pushed, so it stays approved for the next Push.
+async function registeredRepos($: Engine): Promise<string[]> {
+  return (await $.store.keys()).filter((k) => k.startsWith('repo:')).map((k) => k.slice('repo:'.length))
+}
+
+async function openPr($: Engine, url: string): Promise<void> {
+  await run($, ['open', url])
+}
+
+// Checked every few seconds by the session holding the poll lease, so a push's PR link and a resolved conflict show
+// soon after they finish.
+async function checkPushes($: Engine): Promise<void> {
+  const lease = (await $.store.get('lease')) as { owner: string } | undefined
+  if (lease?.owner !== me) {
+    return
+  }
+  for (const repo of await registeredRepos($)) {
+    const state = await branchState($, repo)
+    if (state.pushing) {
+      await checkPush($, repo, state)
+    }
+  }
+  for (const t of await allTracked($)) {
+    if (t.status === 'resolving') {
+      await checkResolve($, t)
+    }
+  }
+}
+
+// An update that landed while a push ran is not in what was pushed, so it stays approved for the next push.
 async function checkPush($: Engine, repo: string, state: BranchState): Promise<void> {
   const result = await readResult($, `${await stateDir($)}/results/push-${slug(repo)}.json`)
   if (!result) {
     if (Date.now() - (state.pushStartedAt ?? 0) > PUSH_TIMEOUT_MS) {
-      await saveBranchState($, repo, { ...state, pushing: false })
-      await notify($, `The docs push for ${repo} did not finish. Push again from /docs-watch.`)
+      await finishPush($, repo, { ...state, pushing: false, lastError: 'the push did not finish' })
     }
     return
   }
   if (typeof result.url !== 'string') {
-    await saveBranchState($, repo, { ...state, pushing: false })
-    await notify($, `The docs push for ${repo} failed: ${String(result.error ?? 'no reason given')}`)
+    await finishPush($, repo, { ...state, pushing: false, lastError: String(result.error ?? 'no reason given') })
     return
   }
   for (const t of await allTracked($)) {
-    if (t.repo === repo && t.status === 'approved' && (t.approvedAt ?? 0) <= (state.pushStartedAt ?? 0)) {
+    if (t.repo === repo && t.status === 'approved' && (t.landedAt ?? 0) <= (state.pushStartedAt ?? 0)) {
       await save($, { ...t, status: 'pushed', prUrl: result.url })
     }
   }
-  await saveBranchState($, repo, { ...state, pushing: false, prUrl: result.url })
-  await notify($, `Docs PR: ${result.url}`)
+  await finishPush($, repo, { ...state, pushing: false, prUrl: result.url, announce: true })
+}
+
+async function finishPush($: Engine, repo: string, state: BranchState): Promise<void> {
+  await saveBranchState($, repo, state)
+  await notify($, state.lastError ? `The docs push for ${repo} failed: ${state.lastError}` : `Docs PR updated: ${state.prUrl ?? ''}`)
+  if (state.pushAgain || !state.lastError) {
+    await applyNext($, repo)
+  }
 }
 
 async function dismiss($: Engine, t: Tracked): Promise<void> {
@@ -472,32 +573,31 @@ export const register: Register = (on) => {
       $.ui.toast(problem)
     }
     await registerRepo($)
-    const found = await visible($)
-    await update($, shown, () => found)
+    await refreshShown($)
     $.clock.after(FIRST_TICK_MS, async () => {
       await tick($)
-      const latest = await visible($)
-      await update($, shown, () => latest)
+      await refreshShown($)
     })
     $.clock.every(TICK_MS, async () => {
       await tick($)
-      const latest = await visible($)
-      await update($, shown, () => latest)
+      await refreshShown($)
+    })
+    $.clock.every(PUSH_CHECK_MS, async () => {
+      await checkPushes($)
+      await refreshShown($)
     })
 
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
-    const found = await visible($)
-    await update($, shown, () => found)
+    await refreshShown($)
 
     return next(e)
   })
 
   on('command.run', { command: 'docs-watch' }, async ($) => {
-    const found = await visible($)
-    await update($, shown, () => found)
+    await refreshShown($)
     await $.ui.open({ id: PANE, title: 'Docs updates' })
 
     return { text: 'Docs updates opened.' }
@@ -507,8 +607,11 @@ export const register: Register = (on) => {
     const current = (await read($, shown)) ?? []
     const problem = await read($, setup)
     const waiting = current.filter((t) => t.status === 'suggested').length
-    const approved = current.filter((t) => t.status === 'approved').length
-    if (e.props.hasSurvey || (waiting === 0 && approved === 0 && !problem)) {
+    const states = Object.entries((await read($, branches)) ?? {})
+    const announced = states.filter(([, b]) => b.announce && b.prUrl)
+    const failed = states.filter(([, b]) => b.lastError && !b.pushing)
+    const pushing = states.some(([, b]) => b.pushing)
+    if (e.props.hasSurvey || (waiting === 0 && announced.length === 0 && failed.length === 0 && !pushing && !problem)) {
       return next(e)
     }
     const { Box, Button, Text } = $.ui.resolve(e)
@@ -534,14 +637,34 @@ export const register: Register = (on) => {
       )
     }
 
-    const parts = [waiting > 0 ? `${waiting} docs update(s) suggested` : '', approved > 0 ? `${approved} approved, not pushed` : '']
+    const parts = [
+      waiting > 0 ? `${waiting} docs update(s) suggested` : '',
+      pushing ? 'Pushing docs updates…' : '',
+      announced.length > 0 ? 'Docs PR updated' : '',
+      failed.length > 0 ? `Docs push failed: ${failed[0][1].lastError}` : '',
+    ]
     return (
       <Box>
-        <Text>{`${parts.filter(Boolean).join(', ')} `}</Text>
-        <Button key="review" label="Review" onPress={() => $.ui.open({ id: PANE, title: 'Docs updates' })} />
-        {approved > 0 && (
-          <Button key="push" label="Push" onPress={() => inBackground($, 'Push', async () => { await pushAll($); await refreshShown($) })} />
+        <Text>{`${parts.filter(Boolean).join(' · ')} `}</Text>
+        {waiting > 0 && <Button key="review" label="Review" onPress={() => $.ui.open({ id: PANE, title: 'Docs updates' })} />}
+        {announced.map(([repo, b]) => (
+          <Button key={`open-${repo}`} label={announced.length > 1 ? `Open ${repo} PR` : 'Open PR'} onPress={() => inBackground($, 'Open', () => openPr($, b.prUrl ?? ''))} />
+        ))}
+        {announced.length > 0 && (
+          <Button
+            key="hide"
+            label="Hide"
+            onPress={() =>
+              inBackground($, 'Hide', async () => {
+                for (const [repo, b] of announced) {
+                  await saveBranchState($, repo, { ...(await branchState($, repo)), announce: false })
+                }
+                await refreshShown($)
+              })
+            }
+          />
         )}
+        {failed.length > 0 && <Button key="retry" label="Retry" onPress={() => inBackground($, 'Retry', async () => { await retryPush($); await refreshShown($) })} />}
       </Box>
     )
   })
@@ -555,7 +678,6 @@ export const register: Register = (on) => {
     }
 
     const suggested = current.filter((t) => t.status === 'suggested')
-    const approvedCount = current.filter((t) => t.status === 'approved').length
     return (
       <Box flexDirection="column">
         {suggested.length > 1 && (
@@ -565,10 +687,13 @@ export const register: Register = (on) => {
             onPress={() =>
               inBackground($, 'Approve all', async () => {
                 for (const t of suggested) {
-                  await showStatus($, t, 'approved')
+                  await showStatus($, t, 'applying')
                 }
                 for (const t of suggested) {
                   await approve($, t)
+                }
+                for (const repo of new Set(suggested.map((t) => t.repo))) {
+                  await applyNext($, repo)
                 }
                 await refreshShown($)
               })
@@ -579,8 +704,15 @@ export const register: Register = (on) => {
           <Box key={t.key} flexDirection="column">
             <Text bold>{`${t.key}: ${t.title ?? ''}`}</Text>
             <Text dimColor>{t.summary ?? ''}</Text>
-            {t.status === 'approved' && <Text>Approved, not pushed yet</Text>}
-            {t.status === 'pushed' && <Text>{`In the docs PR: ${t.prUrl ?? ''}`}</Text>}
+            {t.status === 'applying' && <Text>Approved, adding to the docs branch…</Text>}
+            {t.status === 'resolving' && <Text>Resolving a conflict with another update…</Text>}
+            {t.status === 'approved' && <Text>Approved, pushing…</Text>}
+            {t.status === 'pushed' && (
+              <Box>
+                <Text>{`In the docs PR: ${t.prUrl ?? ''} `}</Text>
+                <Button key={`open-${t.key}`} label="Open PR" onPress={() => inBackground($, 'Open', () => openPr($, t.prUrl ?? ''))} />
+              </Box>
+            )}
             {t.status === 'approving' && <Text>Opening the PR…</Text>}
             {t.status === 'pr-open' && <Text>{`PR: ${t.prUrl}`}</Text>}
             {t.status === 'failed' && <Text color="red">{`Failed: ${t.error ?? ''}`}</Text>}
@@ -591,8 +723,9 @@ export const register: Register = (on) => {
                   label="Approve"
                   onPress={() =>
                     inBackground($, 'Approve', async () => {
-                      await showStatus($, t, 'approved')
+                      await showStatus($, t, 'applying')
                       await approve($, t)
+                      await applyNext($, t.repo)
                       await refreshShown($)
                     })
                   }
@@ -614,8 +747,7 @@ export const register: Register = (on) => {
                     inBackground($, 'Dismiss', async () => {
                       await showStatus($, t, null)
                       await dismiss($, t)
-                      const latest = await visible($)
-                      await update($, shown, () => latest)
+                      await refreshShown($)
                     })
                   }
                 />
@@ -629,8 +761,7 @@ export const register: Register = (on) => {
                   inBackground($, 'Clear', async () => {
                     await showStatus($, t, null)
                     await dismiss($, t)
-                    const latest = await visible($)
-                    await update($, shown, () => latest)
+                    await refreshShown($)
                   })
                 }
               />
@@ -638,13 +769,6 @@ export const register: Register = (on) => {
             {open && open.key === t.key && <Markdown text={`\`\`\`diff\n${open.text}\n\`\`\``} />}
           </Box>
         ))}
-        {approvedCount > 0 && (
-          <Button
-            key="pane-push"
-            label={`Push ${approvedCount} approved update(s)`}
-            onPress={() => inBackground($, 'Push', async () => { await pushAll($); await refreshShown($) })}
-          />
-        )}
       </Box>
     )
   })
