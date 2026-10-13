@@ -15,22 +15,25 @@ export async function draftResult(io: Host, t: Tracked): Promise<string> {
 // Subagents start only from a session. When the engine refuses or fails to start one (as it may from a timer), the item
 // waits with `pendingStart` and the next turn, `/docs-watch` or session start tries again; each refusal is logged.
 export async function spawnFor(io: Host, t: Tracked, where: string, spec: SpawnSpec): Promise<void> {
-  let problem = ''
+  const started = await startAgent(io, spec)
+  if ('problem' in started) {
+    await logError(io, where, started.problem, t.key)
+    await save(io, { ...t, pendingStart: true, error: started.problem })
+    return
+  }
+  await save(io, { ...t, agentId: started.agentId, pendingStart: undefined, note: undefined, error: undefined, startedAt: Date.now() })
+}
+
+async function startAgent(io: Host, spec: SpawnSpec): Promise<{ agentId: string } | { problem: string }> {
   try {
     const started = await io.spawn(spec)
     if ('deny' in started && started.deny) {
-      problem = `subagent refused: ${JSON.stringify(started.deny)}`
-    } else if (!started.agentId) {
-      problem = 'subagent did not start (no agent id)'
-    } else {
-      await save(io, { ...t, agentId: started.agentId, pendingStart: undefined, note: undefined, error: undefined, startedAt: Date.now() })
-      return
+      return { problem: `subagent refused: ${JSON.stringify(started.deny)}` }
     }
+    return started.agentId ? { agentId: started.agentId } : { problem: 'subagent did not start (no agent id)' }
   } catch (error) {
-    problem = `subagent failed to start: ${describe(error)}`
+    return { problem: `subagent failed to start: ${describe(error)}` }
   }
-  await logError(io, where, problem, t.key)
-  await save(io, { ...t, pendingStart: true, error: problem })
 }
 
 export async function startDraft(io: Host, t: Tracked): Promise<void> {
@@ -71,13 +74,14 @@ export async function startWriter(io: Host, t: Tracked, note: string): Promise<v
 
 export async function checkDraft(io: Host, t: Tracked): Promise<void> {
   const result = await readResult(io, await draftResult(io, t), t.key)
+  if (!result && (t.pendingStart || Date.now() - (t.startedAt ?? 0) <= DRAFT_TIMEOUT_MS)) {
+    return
+  }
   if (!result) {
-    if (!t.pendingStart && Date.now() - (t.startedAt ?? 0) > DRAFT_TIMEOUT_MS) {
-      const where = t.agentId ? ` (agent ${t.agentId})` : ''
-      const error = `the draft wrote no result file within ${DRAFT_TIMEOUT_MS / 60000} minutes${where}`
-      await logError(io, 'draft', error, t.key)
-      await save(io, { ...t, status: 'failed', error })
-    }
+    const where = t.agentId ? ` (agent ${t.agentId})` : ''
+    const error = `the draft wrote no result file within ${DRAFT_TIMEOUT_MS / 60000} minutes${where}`
+    await logError(io, 'draft', error, t.key)
+    await save(io, { ...t, status: 'failed', error })
     return
   }
   const work = t.work ?? ''

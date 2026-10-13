@@ -1,15 +1,12 @@
-import type { Tracked } from '../types'
-import { checkBranch, checkResolve, startMerger } from './branch'
+import type { Status, Tracked } from '../types'
+import { checkBranch, startMerger } from './branch'
 import { checkDraft, startDraft, startWriter } from './draft'
 import type { Host } from './host'
 import { logError, runLogged } from './log'
 import { allTracked, holdsLease, registeredRepos, save, tracked } from './store'
 import { onlyDocsTestsCi, parseJson } from './text'
 
-/**
- * One poll: track the person's open PRs in every repository a session registered, and move each tracked PR on.
- * `ready` checks the requirements and says whether polling can go ahead.
- */
+// One poll: track the person's open PRs in every registered repository and move each tracked PR on, once `ready`.
 export async function tick(io: Host, ready: () => Promise<boolean>): Promise<void> {
   try {
     if (await ready()) {
@@ -29,13 +26,7 @@ async function poll(io: Host): Promise<void> {
     await trackOpen(io, repo)
   }
   for (const t of await allTracked(io)) {
-    if (t.status === 'open') {
-      await checkMerged(io, t)
-    } else if (t.status === 'drafting') {
-      await checkDraft(io, t)
-    } else if (t.status === 'resolving') {
-      await checkResolve(io, t)
-    }
+    await STEPS[t.status]?.(io, t)
   }
   for (const repo of repos) {
     await checkBranch(io, repo)
@@ -72,21 +63,27 @@ async function checkMerged(io: Host, t: Tracked): Promise<void> {
   }
   if (info.state === 'CLOSED') {
     await save(io, { ...t, status: 'closed' })
-  } else if (info.state === 'MERGED') {
-    const skip = onlyDocsTestsCi(info.files.map((f) => f.path))
-    await (skip ? save(io, { ...t, status: 'skipped' }) : startDraft(io, t))
+    return
   }
+  if (info.state !== 'MERGED') {
+    return
+  }
+  const skip = onlyDocsTestsCi(info.files.map((f) => f.path))
+  await (skip ? save(io, { ...t, status: 'skipped' }) : startDraft(io, t))
+}
+
+const STEPS: Partial<Record<Status, (io: Host, t: Tracked) => Promise<void>>> = { open: checkMerged, drafting: checkDraft }
+
+const RESTARTS: Partial<Record<Status, (io: Host, t: Tracked) => Promise<void>>> = {
+  drafting: (io, t) => startWriter(io, t, t.note ?? ''),
+  resolving: startMerger,
 }
 
 // Starts the drafts and conflict resolutions that are waiting for a session to take them.
 export async function startPending(io: Host): Promise<void> {
   try {
-    for (const t of await allTracked(io)) {
-      if (t.status === 'drafting' && t.pendingStart) {
-        await startWriter(io, t, t.note ?? '')
-      } else if (t.status === 'resolving' && t.pendingStart) {
-        await startMerger(io, t)
-      }
+    for (const t of (await allTracked(io)).filter((t) => t.pendingStart)) {
+      await RESTARTS[t.status]?.(io, t)
     }
   } catch (error) {
     await logError(io, 'start pending', error)

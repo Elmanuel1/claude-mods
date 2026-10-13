@@ -6,14 +6,14 @@ import type { Host } from './host'
 const REPEAT_MS = 60 * 1000
 const CAN_PUSH = ['ADMIN', 'MAINTAIN', 'WRITE']
 
-/** What the checks found; `null` where a check did not run because an earlier one failed. */
+// What the checks found; `null` where a check did not run because an earlier one failed.
 export type Facts = {
   os: string
   git: boolean
   claude: boolean
   gh: boolean
   ghAuth: boolean | null
-  /** this session's GitHub repository; `permission` is null when gh cannot reach it */
+  // this session's GitHub repository; `permission` is null when gh cannot reach it
   repo: { name: string; permission: string | null } | null
 }
 
@@ -80,25 +80,36 @@ export function missingRequirements(facts: Facts): Missing[] {
       fix: 'run `gh auth login --hostname github.com`',
     })
   }
-  const repo = facts.repo
-  if (repo && repo.permission === null) {
-    missing.push({
+  const repo = repoMissing(facts.repo)
+  if (repo) {
+    missing.push(repo)
+  }
+  return missing
+}
+
+function repoMissing(repo: Facts['repo']): Missing | null {
+  if (!repo) {
+    return null
+  }
+  if (repo.permission === null) {
+    return {
       id: `repo:${repo.name}`,
       tool: 'gh',
       blocks: false,
       what: `gh's github.com login cannot reach ${repo.name}`,
       fix: 'run `gh auth refresh --hostname github.com --scopes repo`, or `gh auth login` as an account with access',
-    })
-  } else if (repo && repo.permission !== null && !CAN_PUSH.includes(repo.permission)) {
-    missing.push({
-      id: `repo:${repo.name}`,
-      tool: 'gh',
-      blocks: false,
-      what: `gh's github.com login can read ${repo.name} but not push to it`,
-      fix: 'ask for write access, or run `gh auth login --hostname github.com` as an account that has it',
-    })
+    }
   }
-  return missing
+  if (CAN_PUSH.includes(repo.permission)) {
+    return null
+  }
+  return {
+    id: `repo:${repo.name}`,
+    tool: 'gh',
+    blocks: false,
+    what: `gh's github.com login can read ${repo.name} but not push to it`,
+    fix: 'ask for write access, or run `gh auth login --hostname github.com` as an account that has it',
+  }
 }
 
 // `owner/name` from a GitHub remote URL (https or ssh); null for any other host.
@@ -111,10 +122,7 @@ export const describeMissing = (m: Missing) => `${m.what}: ${m.fix}`
 
 export const popupText = (due: Missing[]) => `docs-watch: ${due.map(describeMissing).join('. ')}.`
 
-/**
- * The missing requirements to pop up now: each once per session, and again when an action using its tool failed,
- * at most once a minute.
- */
+// Each missing requirement pops up once per session, and again when an action using its tool failed.
 export function dueForPopup(missing: Missing[], shownAt: Record<string, number>, now: number, failedTool?: string): Missing[] {
   return missing.filter((m) => {
     const last = shownAt[m.id]

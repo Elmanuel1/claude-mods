@@ -10,10 +10,8 @@ const PUSH_STALE_MS = 10 * 60 * 1000
 
 export const pushRunning = (state: BranchState) => state.pushing === true && Date.now() - (state.pushStartedAt ?? 0) < PUSH_STALE_MS
 
-/**
- * Approving ships at once: a push starts now, or right after the one already running. True when the queue should be
- * looked at again: this push succeeded, or another approval arrived while it ran.
- */
+// A push starts now, or right after the one already running. True when the queue needs another look: this push
+// succeeded, or another approval arrived while it ran.
 export async function requestPush(io: Host, repo: string): Promise<boolean> {
   const state = await branchState(io, repo)
   if (pushRunning(state)) {

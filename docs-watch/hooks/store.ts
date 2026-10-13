@@ -4,21 +4,21 @@ import { runLogged, stateDir } from './log'
 import { slug } from './text'
 
 const LEASE_MS = 10 * 60 * 1000
-const SHOWN: readonly Status[] = ['suggested', 'applying', 'resolving', 'approved', 'pushed', 'approving', 'pr-open', 'failed']
+const SHOWN: readonly Status[] = ['suggested', 'applying', 'resolving', 'approved', 'pushed', 'failed']
 
 // This session's id for the poller lease: only one open session polls GitHub at a time.
 const me = Math.random().toString(36).slice(2)
 
 export async function allTracked(io: Host): Promise<Tracked[]> {
   const keys = await io.keys()
-  const tracked: Tracked[] = []
+  const items: Tracked[] = []
   for (const key of keys.filter((k) => k.startsWith('pr:'))) {
     const value = (await io.get(key)) as Tracked | undefined
     if (value) {
-      tracked.push(value)
+      items.push(value)
     }
   }
-  return tracked
+  return items
 }
 
 export async function tracked(io: Host, key: string): Promise<Tracked | undefined> {

@@ -4,7 +4,7 @@ import type { EngineInterface as Engine, Register } from 'claude-code'
 import type { Missing, Status, Tracked } from '../types'
 import { bandIsEmpty, bandView } from './band'
 import type { BandActions, BandModel } from './band'
-import { applyNext, approve, checkResolves, retryPush } from './branch'
+import { advanceQueues, approve, clearPushErrors } from './branch'
 import { dismiss, redo } from './draft'
 import type { Host, Kit } from './host'
 import { clearErrors, logError, recentErrors, runLogged } from './log'
@@ -12,7 +12,7 @@ import { paneView } from './pane'
 import type { PaneActions } from './pane'
 import { startPending, tick } from './poll'
 import { blocking, checkRequirements, describeMissing, dueForPopup, popupText } from './requirements'
-import { branchState, branchStates, registerRepo, saveBranchState, toplevel, tracked, visible } from './store'
+import { branchState, branchStates, holdsLease, registerRepo, saveBranchState, toplevel, tracked, visible } from './store'
 import { describe } from './text'
 
 const PANE = 'docs-watch'
@@ -88,15 +88,33 @@ async function recheckAfterFailure($: Engine, tool: 'git' | 'gh'): Promise<void>
   await showRequirements($, missing, tool)
 }
 
-// Polling goes ahead only when nothing blocks it.
-async function ready($: Engine): Promise<boolean> {
-  const missing = await checkRequirements(host($), sessionCheckout)
+// Checks the requirements, shows what is missing, and registers this session's repository once nothing blocks.
+async function setUp($: Engine): Promise<Missing[]> {
+  const io = host($)
+  const missing = await checkRequirements(io, sessionCheckout)
   await showRequirements($, missing)
   const blocked = blocking(missing)
+  if (blocked.length === 0) {
+    await registerRepo(io, sessionCheckout)
+  }
+  return blocked
+}
+
+// Polling goes ahead only when nothing blocks it.
+async function ready($: Engine): Promise<boolean> {
+  const blocked = await setUp($)
   if (blocked.length > 0) {
     await logError(host($), 'setup', blocked.map(describeMissing).join('; '))
   }
   return blocked.length === 0
+}
+
+// Approvals and retries ship from this session when it holds the poll lease, else from the session that does.
+async function shipNow($: Engine): Promise<void> {
+  const io = host($)
+  if (await holdsLease(io, Date.now())) {
+    await advanceQueues(io)
+  }
 }
 
 // A press returns at once and the work runs after it, so the surface never waits on git, an agent spawn or the store.
@@ -137,9 +155,7 @@ function paneActions($: Engine): PaneActions {
     for (const t of items) {
       await approve(io, t)
     }
-    for (const repo of new Set(items.map((t) => t.repo))) {
-      await applyNext(io, repo)
-    }
+    await shipNow($)
     await refreshShown($)
   }
   return {
@@ -173,10 +189,8 @@ function bandActions($: Engine, announced: string[]): BandActions {
   return {
     recheck: () =>
       inBackground($, 'Check', async () => {
-        const again = await checkRequirements(io, sessionCheckout)
-        await showRequirements($, again)
-        if (blocking(again).length === 0) {
-          await registerRepo(io, sessionCheckout)
+        const blocked = await setUp($)
+        if (blocked.length === 0) {
           $.ui.toast('docs-watch is set up.')
         }
       }),
@@ -191,10 +205,22 @@ function bandActions($: Engine, announced: string[]): BandActions {
       }),
     retry: () =>
       inBackground($, 'Retry', async () => {
-        await retryPush(io)
+        await clearPushErrors(io)
+        await shipNow($)
         await refreshShown($)
       }),
   }
+}
+
+async function redoCommand($: Engine, key: string, note: string): Promise<{ text: string }> {
+  const io = host($)
+  const target = await tracked(io, key)
+  if (!target || target.status !== 'suggested') {
+    return { text: `No suggestion waiting for ${key}.` }
+  }
+  await redo(io, target, note.trim())
+  await refreshShown($)
+  return { text: `Redrafting ${key}.` }
 }
 
 export const register: Register = (on) => {
@@ -202,11 +228,7 @@ export const register: Register = (on) => {
     const io = host($)
     await $.command.register({ name: 'docs-watch', description: 'Review documentation updates drafted after your PRs merged' })
     sessionCheckout = await toplevel(io)
-    const missing = await checkRequirements(io, sessionCheckout)
-    await showRequirements($, missing)
-    if (blocking(missing).length === 0) {
-      await registerRepo(io, sessionCheckout)
-    }
+    await setUp($)
     await startPending(io)
     await refreshShown($)
     const poll = async () => {
@@ -216,7 +238,7 @@ export const register: Register = (on) => {
     $.clock.after(FIRST_TICK_MS, poll)
     $.clock.every(TICK_MS, poll)
     $.clock.every(RESOLVE_CHECK_MS, async () => {
-      await checkResolves(io)
+      await advanceQueues(io)
       await refreshShown($)
     })
 
@@ -232,19 +254,11 @@ export const register: Register = (on) => {
 
   // `/docs-watch redo <owner/repo#number> <note>` redrafts one suggestion with a note; anything else opens the list.
   on('command.run', { command: 'docs-watch' }, async ($, e) => {
-    const io = host($)
     const redoArgs = /^redo\s+(\S+)\s+([\s\S]+)$/.exec(e.args.trim())
     if (redoArgs) {
-      const [, key = '', note = ''] = redoArgs
-      const target = await tracked(io, key)
-      if (!target || target.status !== 'suggested') {
-        return { text: `No suggestion waiting for ${key}.` }
-      }
-      await redo(io, target, note.trim())
-      await refreshShown($)
-      return { text: `Redrafting ${key}.` }
+      return redoCommand($, redoArgs[1] ?? '', redoArgs[2] ?? '')
     }
-    await startPending(io)
+    await startPending(host($))
     await refreshShown($)
     await openPane($)
 

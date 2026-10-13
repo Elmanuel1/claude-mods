@@ -7,8 +7,6 @@ export type Status =
   | 'approved'
   | 'pushed'
   | 'merged'
-  | 'approving'
-  | 'pr-open'
   | 'failed'
   | 'skipped'
   | 'no-change'

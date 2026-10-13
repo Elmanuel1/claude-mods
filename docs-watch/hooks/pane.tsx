@@ -21,7 +21,6 @@ export type PaneActions = {
   clearErrors: () => void
 }
 
-// The review list: what setup is missing, each tracked update with its actions, and the recent errors.
 export function paneView(kit: Kit, m: PaneModel, act: PaneActions): RenderElement {
   const { Box, Button, Text } = kit
   const suggested = m.current.filter((t) => t.status === 'suggested')
@@ -88,8 +87,6 @@ function statusLine(kit: Kit, t: Tracked, act: PaneActions): RenderElement | nul
   const lines: Partial<Record<Tracked['status'], string>> = {
     applying: 'Approved, adding to the docs branch…',
     approved: 'Approved, pushing…',
-    approving: 'Opening the PR…',
-    'pr-open': `PR: ${t.prUrl ?? ''}`,
   }
   const line = lines[t.status]
   return line ? <Text>{line}</Text> : null
@@ -98,7 +95,6 @@ function statusLine(kit: Kit, t: Tracked, act: PaneActions): RenderElement | nul
 function itemView(kit: Kit, t: Tracked, open: PaneModel['open'], act: PaneActions): RenderElement {
   const { Box, Button, Input, Markdown, Text } = kit
   const isOpen = open !== null && open.key === t.key
-  const canClear = t.status === 'pr-open' || t.status === 'failed' || t.status === 'approving'
   return (
     <Box key={t.key} flexDirection="column">
       <Text bold>{t.docsTitle ?? `${t.key}: ${t.title ?? ''}`}</Text>
@@ -121,7 +117,7 @@ function itemView(kit: Kit, t: Tracked, open: PaneModel['open'], act: PaneAction
           onSubmit={(value: string) => act.redo(t, value)}
         />
       )}
-      {canClear && <Button key={`clear-${t.key}`} label="Clear" onPress={() => act.dismiss(t)} />}
+      {t.status === 'failed' && <Button key={`clear-${t.key}`} label="Clear" onPress={() => act.dismiss(t)} />}
       {isOpen && open && <Markdown text={`\`\`\`diff\n${open.text}\n\`\`\``} />}
     </Box>
   )

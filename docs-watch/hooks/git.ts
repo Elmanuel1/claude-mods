@@ -1,7 +1,7 @@
 import type { Tracked } from '../types'
 import type { Host } from './host'
 import { runLogged, stateDir } from './log'
-import { branchWorktree, save } from './store'
+import { allTracked, branchWorktree, save } from './store'
 
 // One branch per repository collects every approved update, so many merged PRs ship as one docs PR.
 export const BRANCH = 'docs/updates'
@@ -45,7 +45,7 @@ export async function picking(io: Host, branch: string): Promise<boolean> {
 
 // Restarts the branch from the latest default branch and queues the approvals still to ship to land again, through
 // the same queue as a new approval, so a conflict with the new main is resolved the same way. Returns the base commit.
-export async function rebuild(io: Host, branch: string, checkout: string, keep: Tracked[]): Promise<string> {
+export async function rebuild(io: Host, repo: string, branch: string, checkout: string): Promise<string> {
   const dirty = (await io.run(['git', '-C', branch, 'status', '--porcelain'])).stdout.trim() !== ''
   if (dirty || (await picking(io, branch))) {
     return ''
@@ -53,7 +53,7 @@ export async function rebuild(io: Host, branch: string, checkout: string, keep: 
   await runLogged(io, 'rebuild', ['git', '-C', checkout, 'fetch', '-q', 'origin'])
   const base = await defaultBase(io, checkout)
   await runLogged(io, 'rebuild', ['git', '-C', branch, 'reset', '-q', '--hard', base])
-  for (const t of keep) {
+  for (const t of (await allTracked(io)).filter((t) => t.repo === repo && t.status === 'approved')) {
     await save(io, { ...t, status: 'applying' })
   }
   return (await runLogged(io, 'rebuild', ['git', '-C', checkout, 'rev-parse', base])).stdout.trim()

@@ -23,7 +23,6 @@ export type BandActions = {
 export const bandIsEmpty = (m: BandModel) =>
   m.blocked.length === 0 && m.waiting === 0 && m.announced.length === 0 && m.failed.length === 0 && !m.pushing
 
-// The line above the prompt: what blocks the mod, else the suggestions waiting and the docs PR's state.
 export function bandView(kit: Kit, m: BandModel, act: BandActions): RenderElement {
   const { Box, Button, Text } = kit
   if (m.blocked.length > 0) {
