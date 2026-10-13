@@ -1,400 +1,284 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface as Engine, Register } from 'claude-code'
 
-import type { Status, Tracked } from '../types'
+import type { Missing, Status, Tracked } from '../types'
+import { bandIsEmpty, bandView } from './band'
+import type { BandActions, BandModel } from './band'
+import { advanceQueues, approve, clearPushErrors } from './branch'
+import { dismiss, redo } from './draft'
+import type { Host, Kit } from './host'
+import { clearErrors, logError, recentErrors, runLogged } from './log'
+import { paneView } from './pane'
+import type { PaneActions } from './pane'
+import { startPending, tick } from './poll'
+import { blocking, checkRequirements, describeMissing, dueForPopup, popupText } from './requirements'
+import { branchState, branchStates, registerRepo, saveBranchState, toplevel, tracked, visible } from './store'
+import { describe } from './text'
 
 const PANE = 'docs-watch'
 const TICK_MS = 5 * 60 * 1000
 const FIRST_TICK_MS = 20 * 1000
-const DRAFT_TIMEOUT_MS = 45 * 60 * 1000
-const DIFF_LIMIT = 60000
-const SHOWN: readonly Status[] = ['suggested', 'approving', 'pr-open', 'failed']
-// A PR that touched only these needs no documentation update.
-const NO_DOCS_NEEDED = /(^|\/)docs?\/|\.mdx?$|(^|\/)(test|tests|__tests__|spec)\/|(Spec|Test)\.(groovy|java|kt)$|\.(test|spec)\.[cm]?[jt]sx?$|^\.github\/|^\.claude\//
+const RESOLVE_CHECK_MS = 15 * 1000
+const RECHECK_MS = 30 * 1000
+const POPUP_MS = 15 * 1000
 
 const shown = atom({ plugin: 'docs-watch', key: 'shown' } as const, null)
 const diff = atom({ plugin: 'docs-watch', key: 'diff' } as const, null)
 const setup = atom({ plugin: 'docs-watch', key: 'setup' } as const, null)
+const errors = atom({ plugin: 'docs-watch', key: 'errors' } as const, null)
+const branches = atom({ plugin: 'docs-watch', key: 'branches' } as const, null)
+const popups = atom({ plugin: 'docs-watch', key: 'popups' } as const, null)
 
-// This session's id for the poller lease: only one open session polls GitHub at a time.
-const me = Math.random().toString(36).slice(2)
+// The checkout this session runs in, for registering its repository and checking access to it; set at session start.
+let sessionCheckout: string | undefined
+let lastRecheck = Number.NEGATIVE_INFINITY
 
-async function run($: Engine, argv: string[], cwd?: string) {
-  try {
-    return await $.process.run(argv, { cwd, timeoutMs: 120000 })
-  } catch (error) {
-    return { exitCode: 127, stdout: '', stderr: String(error) }
-  }
-}
-
-// What stops the mod from working on this machine, as the step that fixes it; null when nothing does.
-async function setupProblem($: Engine): Promise<string | null> {
-  const git = await run($, ['git', '--version'])
-  if (git.exitCode !== 0) {
-    return 'docs-watch needs git: install it, then press Check again.'
-  }
-  const gh = await run($, ['gh', '--version'])
-  if (gh.exitCode !== 0) {
-    return 'docs-watch needs the GitHub CLI: install it from https://cli.github.com, then press Check again.'
-  }
-  const auth = await run($, ['gh', 'auth', 'status'])
-  if (auth.exitCode !== 0) {
-    return 'docs-watch needs GitHub access: run `gh auth login` in a terminal, then press Check again.'
-  }
-  return null
-}
-
-async function home($: Engine): Promise<string> {
-  const env = await run($, ['printenv', 'HOME'])
-  return env.stdout.trim()
-}
-
-async function stateDir($: Engine): Promise<string> {
-  const root = await home($)
-  return `${root}/.claude/docs-watch`
-}
-
-const slug = (key: string) => key.replace(/[^A-Za-z0-9]+/g, '-')
-
-async function notify($: Engine, text: string): Promise<void> {
-  $.ui.toast(text)
-  const os = await run($, ['uname'])
-  if (os.stdout.trim() === 'Darwin') {
-    const script = `display notification ${JSON.stringify(text)} with title "Claude: docs"`
-    await run($, ['osascript', '-e', script])
-  }
-}
-
-// The repository this session works in, so the poller knows where to make worktrees.
-async function registerRepo($: Engine): Promise<void> {
-  const top = await run($, ['git', 'rev-parse', '--show-toplevel'])
-  if (top.exitCode !== 0) {
-    return
-  }
-  const checkout = top.stdout.trim()
-  const name = await run($, ['gh', 'repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], checkout)
-  if (name.exitCode !== 0) {
-    return
-  }
-  await $.store.set(`repo:${name.stdout.trim()}`, checkout)
-}
-
-async function allTracked($: Engine): Promise<Tracked[]> {
-  const keys = await $.store.keys()
-  const tracked: Tracked[] = []
-  for (const key of keys.filter((k) => k.startsWith('pr:'))) {
-    const value = (await $.store.get(key)) as Tracked | undefined
-    if (value) {
-      tracked.push(value)
-    }
-  }
-  return tracked
-}
-
-async function save($: Engine, tracked: Tracked): Promise<void> {
-  await $.store.set(`pr:${tracked.key}`, tracked)
-}
-
-async function visible($: Engine): Promise<Tracked[]> {
-  const tracked = await allTracked($)
-  return tracked.filter((t) => SHOWN.includes(t.status))
-}
-
-async function holdsLease($: Engine, now: number): Promise<boolean> {
-  const lease = (await $.store.get('lease')) as { owner: string; until: number } | undefined
-  if (lease && lease.owner !== me && lease.until > now) {
-    return false
-  }
-  await $.store.set('lease', { owner: me, until: now + 2 * TICK_MS })
-  return true
-}
-
-async function readResult($: Engine, file: string): Promise<Record<string, unknown> | null> {
-  const out = await run($, ['cat', file])
-  if (out.exitCode !== 0) {
-    return null
-  }
-  try {
-    return JSON.parse(out.stdout) as Record<string, unknown>
-  } catch {
-    return null
-  }
-}
-
-async function removeWorktree($: Engine, t: Tracked): Promise<void> {
-  if (t.checkout && t.work) {
-    await run($, ['git', '-C', t.checkout, 'worktree', 'remove', '--force', t.work])
-  }
-}
-
-async function startDraft($: Engine, t: Tracked): Promise<void> {
-  const checkout = (await $.store.get(`repo:${t.repo}`)) as string | undefined
-  if (!checkout) {
-    return
-  }
-  const dir = await stateDir($)
-  const work = `${dir}/work/${slug(t.key)}`
-  await run($, ['mkdir', '-p', `${dir}/work`, `${dir}/results`])
-  await run($, ['git', '-C', checkout, 'fetch', '-q', 'origin'])
-  const head = await run($, ['git', '-C', checkout, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])
-  const base = head.exitCode === 0 ? head.stdout.trim() : 'origin/main'
-  await run($, ['git', '-C', checkout, 'worktree', 'remove', '--force', work])
-  const added = await run($, ['git', '-C', checkout, 'worktree', 'add', '--detach', work, base])
-  if (added.exitCode !== 0) {
-    await save($, { ...t, status: 'failed', error: added.stderr.trim().split('\n').pop() })
-    return
-  }
-  const result = `${dir}/results/${slug(t.key)}.json`
-  await save($, { ...t, status: 'drafting', checkout, work, startedAt: Date.now() })
-  const prompt = `Repository ${t.repo}, merged pull request #${t.number} ("${t.title ?? ''}"). Draft the documentation update in this worktree (${work}). Write your result file to ${result}.`
-  $.agent.spawn({ prompt, subagentType: 'docs-watch:docs-writer', description: `Docs after ${t.key}`, cwd: work }).catch(() => undefined)
-}
-
-async function checkDraft($: Engine, t: Tracked): Promise<void> {
-  const dir = await stateDir($)
-  const result = await readResult($, `${dir}/results/${slug(t.key)}.json`)
-  if (!result) {
-    if (Date.now() - (t.startedAt ?? 0) > DRAFT_TIMEOUT_MS) {
-      await save($, { ...t, status: 'failed', error: 'the draft did not finish' })
-    }
-    return
-  }
-  const work = t.work ?? ''
-  await run($, ['git', '-C', work, 'add', '-A'])
-  const changes = await run($, ['git', '-C', work, 'diff', '--cached'])
-  const text = changes.stdout
-  if (text.trim() === '') {
-    await removeWorktree($, t)
-    await save($, { ...t, status: 'no-change' })
-    return
-  }
-  const summary = typeof result.summary === 'string' ? result.summary : 'Documentation update'
-  await save($, { ...t, status: 'suggested', summary, diff: text.slice(0, DIFF_LIMIT) })
-  await notify($, `${t.key} merged: docs update suggested. Review with /docs-watch.`)
-}
-
-async function checkApproval($: Engine, t: Tracked): Promise<void> {
-  const dir = await stateDir($)
-  const result = await readResult($, `${dir}/results/${slug(t.key)}.pr.json`)
-  if (!result) {
-    return
-  }
-  if (typeof result.url === 'string') {
-    await removeWorktree($, t)
-    await save($, { ...t, status: 'pr-open', prUrl: result.url })
-    await notify($, `Docs PR opened: ${result.url}`)
-    return
-  }
-  await save($, { ...t, status: 'failed', error: String(result.error ?? 'the PR was not opened') })
-}
-
-async function onlyDocsTestsCi(files: string[]): Promise<boolean> {
-  return files.length > 0 && files.every((file) => NO_DOCS_NEEDED.test(file))
-}
-
-// One poll: track the person's open PRs in every repository a session registered, and move each tracked PR on.
-async function tick($: Engine): Promise<void> {
-  if ((await setupProblem($)) !== null) {
-    return
-  }
-  const now = Date.now()
-  if (!(await holdsLease($, now))) {
-    return
-  }
-  const keys = await $.store.keys()
-  const repos = keys.filter((k) => k.startsWith('repo:')).map((k) => k.slice('repo:'.length))
-  for (const repo of repos) {
-    const open = await run($, ['gh', 'pr', 'list', '--repo', repo, '--author', '@me', '--state', 'open', '--json', 'number,title,url'])
-    if (open.exitCode !== 0) {
-      continue
-    }
-    for (const pr of JSON.parse(open.stdout) as { number: number; title: string; url: string }[]) {
-      const key = `${repo}#${pr.number}`
-      if (!(await $.store.get(`pr:${key}`))) {
-        await save($, { key, repo, number: pr.number, title: pr.title, url: pr.url, status: 'open' })
+function host($: Engine): Host {
+  return {
+    run: async (argv, cwd) => {
+      try {
+        return await $.process.run(argv, { cwd, timeoutMs: 120000 })
+      } catch (error) {
+        return { exitCode: 127, stdout: '', stderr: describe(error) }
       }
-    }
-  }
-  for (const t of await allTracked($)) {
-    if (t.status === 'open') {
-      const view = await run($, ['gh', 'pr', 'view', String(t.number), '--repo', t.repo, '--json', 'state,files'])
-      if (view.exitCode !== 0) {
-        continue
+    },
+    get: (key) => $.store.get(key),
+    set: (key, value) => $.store.set(key, value),
+    keys: () => $.store.keys(),
+    toast: (text, timeoutMs) => (timeoutMs === undefined ? $.ui.toast(text) : $.ui.toast(text, { timeoutMs })),
+    debug: (text) => {
+      try {
+        $.ui.log(text, { to: 'debug' })
+      } catch {
+        // the debug log is best effort
       }
-      const info = JSON.parse(view.stdout) as { state: string; files: { path: string }[] }
-      if (info.state === 'CLOSED') {
-        await save($, { ...t, status: 'closed' })
-      } else if (info.state === 'MERGED') {
-        const files = info.files.map((f) => f.path)
-        const skip = await onlyDocsTestsCi(files)
-        await (skip ? save($, { ...t, status: 'skipped' }) : startDraft($, t))
-      }
-    } else if (t.status === 'drafting') {
-      await checkDraft($, t)
-    } else if (t.status === 'approving') {
-      await checkApproval($, t)
-    }
+    },
+    spawn: (spec) => $.agent.spawn(spec),
+    commandFailed: (tool) => recheckAfterFailure($, tool),
   }
 }
 
-async function approve($: Engine, t: Tracked, note: string): Promise<void> {
-  const dir = await stateDir($)
-  const result = `${dir}/results/${slug(t.key)}.pr.json`
-  await save($, { ...t, status: 'approving' })
-  const branch = `docs/after-pr-${t.number}`
-  const prompt = [
-    `Repository ${t.repo}; merged pull request #${t.number} (${t.url ?? ''}).`,
-    `Branch to create: ${branch}. Summary: ${t.summary ?? ''}.`,
-    note ? `Note from the person, apply it first: ${note}` : 'No note from the person.',
-    `Worktree: ${t.work}. Write your result file to ${result}.`,
-  ].join('\n')
-  $.agent.spawn({ prompt, subagentType: 'docs-watch:docs-pr', description: `Docs PR after ${t.key}`, cwd: t.work }).catch(() => undefined)
-  await notify($, `Opening the docs PR for ${t.key}…`)
+function kitOf(el: Omit<Kit, 'Input'> & Partial<Pick<Kit, 'Input'>>): Kit {
+  return { Box: el.Box, Text: el.Text, Button: el.Button, Markdown: el.Markdown, Input: el.Input ?? null }
 }
 
-async function dismiss($: Engine, t: Tracked): Promise<void> {
-  await removeWorktree($, t)
-  await save($, { ...t, status: 'dismissed' })
+// The band shows what blocks the mod; a toast pops up each missing requirement once per session, and again when an
+// action using its tool failed.
+async function showRequirements($: Engine, missing: Missing[], failedTool?: string): Promise<void> {
+  await update($, setup, () => missing)
+  const now = await $.clock.now()
+  let due: Missing[] = []
+  await update($, popups, (seen) => {
+    const shownAt = seen ?? {}
+    due = dueForPopup(missing, shownAt, now, failedTool)
+    return { ...shownAt, ...Object.fromEntries(due.map((m) => [m.id, now])) }
+  })
+  if (due.length > 0) {
+    $.ui.toast(popupText(due), { timeoutMs: POPUP_MS })
+  }
+}
+
+async function recheckAfterFailure($: Engine, tool: 'git' | 'gh'): Promise<void> {
+  const now = await $.clock.now()
+  if (now - lastRecheck < RECHECK_MS) {
+    return
+  }
+  lastRecheck = now
+  const missing = await checkRequirements(host($), sessionCheckout)
+  await showRequirements($, missing, tool)
+}
+
+async function setUp($: Engine): Promise<Missing[]> {
+  const io = host($)
+  const missing = await checkRequirements(io, sessionCheckout)
+  await showRequirements($, missing)
+  const blocked = blocking(missing)
+  if (blocked.length === 0) {
+    await registerRepo(io, sessionCheckout)
+  }
+  return blocked
+}
+
+// Polling goes ahead only when nothing blocks it.
+async function ready($: Engine): Promise<boolean> {
+  const blocked = await setUp($)
+  if (blocked.length > 0) {
+    await logError(host($), 'setup', blocked.map(describeMissing).join('; '))
+  }
+  return blocked.length === 0
+}
+
+
+// A press returns at once and the work runs after it, so the surface never waits on git, an agent spawn or the store.
+function inBackground($: Engine, action: string, work: () => Promise<unknown>): void {
+  void work().catch(async (error) => {
+    await logError(host($), action, error)
+    $.ui.toast(`${action} failed: ${describe(error)}`)
+  })
+}
+
+// Approve, dismiss and redo change the list before their slow work; the next refresh shows the real state.
+async function showStatus($: Engine, t: Tracked, status: Status | null): Promise<void> {
+  await update($, shown, (current) =>
+    (current ?? []).flatMap((item) => (item.key !== t.key ? [item] : status === null ? [] : [{ ...item, status }])),
+  )
+}
+
+async function refreshShown($: Engine): Promise<void> {
+  const io = host($)
+  const latest = await visible(io)
+  await update($, shown, () => latest)
+  const states = await branchStates(io)
+  await update($, branches, () => states)
+  const log = await recentErrors(io)
+  await update($, errors, () => log)
+}
+
+async function openPane($: Engine): Promise<void> {
+  await $.ui.open({ id: PANE, title: 'Docs updates' })
+}
+
+function paneActions($: Engine): PaneActions {
+  const io = host($)
+  const approveThem = async (items: Tracked[]) => {
+    for (const t of items) {
+      await showStatus($, t, 'applying')
+    }
+    for (const t of items) {
+      await approve(io, t)
+    }
+    await refreshShown($)
+  }
+  return {
+    approve: (t) => inBackground($, 'Approve', () => approveThem([t])),
+    approveAll: (items) => inBackground($, 'Approve all', () => approveThem(items)),
+    toggleDiff: (t) => inBackground($, 'Diff', () => update($, diff, (open) => (open?.key === t.key ? null : { key: t.key, text: t.diff ?? '' }))),
+    dismiss: (t) =>
+      inBackground($, 'Dismiss', async () => {
+        await showStatus($, t, null)
+        await dismiss(io, t)
+        await refreshShown($)
+      }),
+    redo: (t, note) =>
+      note.trim() !== '' &&
+      inBackground($, 'Redo', async () => {
+        await showStatus($, t, 'drafting')
+        await redo(io, t, note.trim())
+        await refreshShown($)
+      }),
+    openPr: (url) => inBackground($, 'Open', () => runLogged(io, 'open', ['open', url])),
+    clearErrors: () =>
+      inBackground($, 'Clear errors', async () => {
+        await clearErrors(io)
+        await update($, errors, () => [])
+      }),
+  }
+}
+
+function bandActions($: Engine, announced: string[]): BandActions {
+  const io = host($)
+  return {
+    recheck: () =>
+      inBackground($, 'Check', async () => {
+        const blocked = await setUp($)
+        if (blocked.length === 0) {
+          $.ui.toast('docs-watch is set up.')
+        }
+      }),
+    review: () => inBackground($, 'Review', () => openPane($)),
+    openPr: (url) => inBackground($, 'Open', () => runLogged(io, 'open', ['open', url])),
+    hide: () =>
+      inBackground($, 'Hide', async () => {
+        for (const repo of announced) {
+          await saveBranchState(io, repo, { ...(await branchState(io, repo)), announce: false })
+        }
+        await refreshShown($)
+      }),
+    retry: () =>
+      inBackground($, 'Retry', async () => {
+        await clearPushErrors(io)
+        await refreshShown($)
+      }),
+  }
+}
+
+async function redoCommand($: Engine, key: string, note: string): Promise<{ text: string }> {
+  const io = host($)
+  const target = await tracked(io, key)
+  if (!target || target.status !== 'suggested') {
+    return { text: `No suggestion waiting for ${key}.` }
+  }
+  await redo(io, target, note.trim())
+  await refreshShown($)
+  return { text: `Redrafting ${key}.` }
 }
 
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
+    const io = host($)
     await $.command.register({ name: 'docs-watch', description: 'Review documentation updates drafted after your PRs merged' })
-    const problem = await setupProblem($)
-    await update($, setup, () => problem)
-    if (problem) {
-      $.ui.toast(problem)
+    sessionCheckout = await toplevel(io)
+    await setUp($)
+    await startPending(io)
+    await refreshShown($)
+    const poll = async () => {
+      await tick(io, () => ready($))
+      await refreshShown($)
     }
-    await registerRepo($)
-    const found = await visible($)
-    await update($, shown, () => found)
-    $.clock.after(FIRST_TICK_MS, async () => {
-      await tick($)
-      const latest = await visible($)
-      await update($, shown, () => latest)
-    })
-    $.clock.every(TICK_MS, async () => {
-      await tick($)
-      const latest = await visible($)
-      await update($, shown, () => latest)
+    $.clock.after(FIRST_TICK_MS, poll)
+    $.clock.every(TICK_MS, poll)
+    $.clock.every(RESOLVE_CHECK_MS, async () => {
+      await advanceQueues(io)
+      await refreshShown($)
     })
 
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
-    const found = await visible($)
-    await update($, shown, () => found)
+    await startPending(host($))
+    await refreshShown($)
 
     return next(e)
   })
 
-  on('command.run', { command: 'docs-watch' }, async ($) => {
-    const found = await visible($)
-    await update($, shown, () => found)
-    await $.ui.open({ id: PANE, title: 'Docs updates' })
+  // `/docs-watch redo <owner/repo#number> <note>` redrafts one suggestion with a note; anything else opens the list.
+  on('command.run', { command: 'docs-watch' }, async ($, e) => {
+    const redoArgs = /^redo\s+(\S+)\s+([\s\S]+)$/.exec(e.args.trim())
+    if (redoArgs) {
+      return redoCommand($, redoArgs[1] ?? '', redoArgs[2] ?? '')
+    }
+    await startPending(host($))
+    await refreshShown($)
+    await openPane($)
 
     return { text: 'Docs updates opened.' }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = (await read($, shown)) ?? []
-    const problem = await read($, setup)
-    const waiting = current.filter((t) => t.status === 'suggested').length
-    if (e.props.hasSurvey || (waiting === 0 && !problem)) {
+    const states = Object.entries((await read($, branches)) ?? {})
+    const model: BandModel = {
+      blocked: blocking((await read($, setup)) ?? []),
+      waiting: current.filter((t) => t.status === 'suggested').length,
+      announced: states.filter(([, b]) => b.announce && b.prUrl),
+      failed: states.filter(([, b]) => b.lastError && !b.pushing),
+      pushing: states.some(([, b]) => b.pushing),
+    }
+    if (e.props.hasSurvey || bandIsEmpty(model)) {
       return next(e)
     }
-    const { Box, Button, Text } = $.ui.resolve(e)
-    if (problem) {
-      return (
-        <Box>
-          <Text color="yellow">{`${problem} `}</Text>
-          <Button
-            key="recheck"
-            label="Check again"
-            onPress={async () => {
-              const again = await setupProblem($)
-              await update($, setup, () => again)
-              if (again === null) {
-                await registerRepo($)
-                $.ui.toast('docs-watch is set up.')
-              }
-            }}
-          />
-        </Box>
-      )
-    }
-
-    return (
-      <Box>
-        <Text>{`${waiting} docs update(s) suggested `}</Text>
-        <Button key="review" label="Review" onPress={() => $.ui.open({ id: PANE, title: 'Docs updates' })} />
-      </Box>
-    )
+    const announced = model.announced.map(([repo]) => repo)
+    return bandView(kitOf($.ui.resolve(e)), model, bandActions($, announced))
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Button, Markdown, Text } = $.ui.resolve(e)
-    const current = (await read($, shown)) ?? []
-    const open = await read($, diff)
-    if (current.length === 0) {
-      return <Text dimColor>No documentation updates waiting.</Text>
+    const model = {
+      current: (await read($, shown)) ?? [],
+      open: await read($, diff),
+      log: (await read($, errors)) ?? [],
+      missing: (await read($, setup)) ?? [],
     }
-
-    return (
-      <Box flexDirection="column">
-        {current.map((t) => (
-          <Box key={t.key} flexDirection="column">
-            <Text bold>{`${t.key}: ${t.title ?? ''}`}</Text>
-            <Text dimColor>{t.summary ?? ''}</Text>
-            {t.status === 'approving' && <Text>Opening the PR…</Text>}
-            {t.status === 'pr-open' && <Text>{`PR: ${t.prUrl}`}</Text>}
-            {t.status === 'failed' && <Text color="red">{`Failed: ${t.error ?? ''}`}</Text>}
-            {t.status === 'suggested' && (
-              <Box>
-                <Button
-                  key={`approve-${t.key}`}
-                  label="Approve"
-                  onPress={async () => {
-                    await approve($, t, '')
-                    const latest = await visible($)
-                    await update($, shown, () => latest)
-                  }}
-                />
-                <Button
-                  key={`diff-${t.key}`}
-                  label={open && open.key === t.key ? 'Hide diff' : 'Diff'}
-                  onPress={async () => {
-                    const isOpen = open !== null && open.key === t.key
-                    await update($, diff, () => (isOpen ? null : { key: t.key, text: t.diff ?? '' }))
-                  }}
-                />
-                <Button
-                  key={`dismiss-${t.key}`}
-                  label="Dismiss"
-                  onPress={async () => {
-                    await dismiss($, t)
-                    const latest = await visible($)
-                    await update($, shown, () => latest)
-                  }}
-                />
-              </Box>
-            )}
-            {(t.status === 'pr-open' || t.status === 'failed') && (
-              <Button
-                key={`clear-${t.key}`}
-                label="Clear"
-                onPress={async () => {
-                  await dismiss($, t)
-                  const latest = await visible($)
-                  await update($, shown, () => latest)
-                }}
-              />
-            )}
-            {open && open.key === t.key && <Markdown text={`\`\`\`diff\n${open.text}\n\`\`\``} />}
-          </Box>
-        ))}
-      </Box>
-    )
+    return paneView(kitOf($.ui.resolve(e)), model, paneActions($))
   })
 }
