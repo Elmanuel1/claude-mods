@@ -21,7 +21,7 @@ the command that fixes it:
 
 | Missing | Fix shown |
 |---|---|
-| `git` | `xcode-select --install` (macOS), or https://git-scm.com/downloads |
+| `git` | `brew install git` (macOS; without Homebrew, `xcode-select --install`), or https://git-scm.com/downloads |
 | `gh` | `brew install gh` (macOS), or https://cli.github.com |
 | `gh` not logged in | `gh auth login --hostname github.com` |
 | `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` |

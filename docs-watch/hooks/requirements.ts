@@ -50,7 +50,7 @@ export function missingRequirements(facts: Facts): Missing[] {
       tool: 'git',
       blocks: true,
       what: 'git is not installed or not on PATH',
-      fix: mac ? 'run `xcode-select --install`' : 'install it from https://git-scm.com/downloads',
+      fix: mac ? 'run `brew install git` (no Homebrew yet: `xcode-select --install`)' : 'install it from https://git-scm.com/downloads',
     })
   }
   if (!facts.claude) {
