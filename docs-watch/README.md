@@ -48,7 +48,7 @@ only exit codes and the repository permission, so no token is ever shown.
    example "also update the README"). Where the pane has no text field, `/docs-watch redo <owner/repo#number> <note>`
    does the same.
 5. **Approve ships.** Approve (or Approve all) commits the draft under the title the skill wrote (what the docs now
-   cover) and queues it for one branch per repository, `docs/updates`. Updates land on the branch one at a time; when one
+   cover) and queues it for one branch per repository, `docs/updates`. Within 15 seconds the session that holds the poll lease lands them on the branch, one at a time; when one
    conflicts with an update already there, the `docs-watch:docs-merge` agent resolves the doc files so both updates'
    content stays, and the queue carries on. Once the queue is empty the mod pushes the branch with `git` and opens one
    pull request for every approved update with `gh pr create`, or updates the one already open with `gh pr edit`. Its

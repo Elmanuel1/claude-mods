@@ -1,12 +1,15 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
-type Machine = { claude: boolean; gh: boolean; loggedIn: boolean }
+type Machine = { claude: boolean; gh: boolean; loggedIn: boolean; logoutOnList?: boolean }
 
 const ALL_PRESENT: Machine = { claude: true, gh: true, loggedIn: true }
 const HOME = '/home/me'
 const CHECKOUT = '/work/repo'
 const SURFACES = ['terminal', 'desktop'] as const
+const FIRST_TICK = 20 * 1000
+const POLL = 5 * 60 * 1000
+const SHIP = 15 * 1000
 const BAND = {
   plugin: 'docs-watch',
   component: 'AbovePrompt',
@@ -35,7 +38,8 @@ const SUGGESTED = {
 const ok = (stdout = ''): ProcessRunResult => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const fail = (exitCode: number, stderr: string): ProcessRunResult => ({ exitCode, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false })
 
-// A machine as the mod's commands see it; a missing binary exits 127 as a shell reports it.
+// A machine as the mod's commands see it; a missing binary exits 127 as a shell reports it. With `logoutOnList`, the
+// token stops working when the poll lists PRs.
 function answer(argv: readonly string[], machine: Machine): ProcessRunResult {
   const command = argv.join(' ')
   if (command === 'claude --version') {
@@ -62,7 +66,8 @@ function answer(argv: readonly string[], machine: Machine): ProcessRunResult {
   if (command.startsWith('gh pr create')) {
     return ok('https://github.com/o/r/pull/9')
   }
-  if (command.startsWith('gh pr list') && !machine.loggedIn) {
+  if (command.startsWith('gh pr list --repo o/r --author') && machine.logoutOnList) {
+    machine.loggedIn = false
     return fail(4, 'HTTP 401: Bad credentials')
   }
   return fixed[command] ?? ok()
@@ -143,26 +148,28 @@ test('gh not logged in: the popup and the band say `gh auth login`, never the to
   }
 })
 
-test('gh not logged in: an approval whose gh command fails brings the popup back', async ($, on) => {
-  const { toasts, clock } = world(on, { ...ALL_PRESENT, loggedIn: false }, { 'repo:o/r': CHECKOUT, [`pr:${SUGGESTED.key}`]: SUGGESTED })
+test('gh logged out mid-session: a failing gh command brings the popup back', async ($, on) => {
+  const machine = { ...ALL_PRESENT, loggedIn: false }
+  const { toasts, clock } = world(on, machine, { 'repo:o/r': CHECKOUT })
   const loginPopups = () => toasts.filter((t) => t.includes('gh auth login'))
   await $.session.start(START)
-  await clock.advance(61 * 1000)
+  await clock.advance(FIRST_TICK)
   expect(loginPopups()).toHaveLength(1)
 
-  const pane = await $.ui.mount({ ...PANE, surface: 'terminal' })
-  await pane.press({ key: `approve-${SUGGESTED.key}` })
+  machine.loggedIn = true
+  machine.logoutOnList = true
+  await clock.advance(POLL - FIRST_TICK)
 
   expect(loginPopups()).toHaveLength(2)
-  await pane.unmount()
 })
 
 test('all present: Approve pushes docs/updates with git and opens one PR with gh, titled by what the docs cover', async ($, on) => {
-  const { toasts, ran } = world(on, ALL_PRESENT, { 'repo:o/r': CHECKOUT, [`pr:${SUGGESTED.key}`]: SUGGESTED })
+  const { toasts, ran, clock } = world(on, ALL_PRESENT, { 'repo:o/r': CHECKOUT, [`pr:${SUGGESTED.key}`]: SUGGESTED })
   await $.session.start(START)
 
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await pane.press({ key: `approve-${SUGGESTED.key}` })
+  await clock.advance(FIRST_TICK + SHIP)
 
   expect(ran).toContain(`git -C ${HOME}/.claude/docs-watch/branch/o-r push --force-with-lease -u origin docs/updates`)
   expect(ran.find((c) => c.startsWith('gh pr create'))).toContain('--base main --head docs/updates --title docs: document retries')

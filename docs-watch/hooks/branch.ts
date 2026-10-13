@@ -36,7 +36,7 @@ export async function approve(io: Host, t: Tracked): Promise<void> {
 }
 
 // Lands approvals on the shared branch one at a time, oldest first, and pushes once none is left to land.
-export async function applyNext(io: Host, repo: string): Promise<void> {
+async function applyNext(io: Host, repo: string): Promise<void> {
   const checkout = await checkoutOf(io, repo)
   const branch = checkout ? await ensureBranch(io, repo, checkout) : null
   if (!branch || (await picking(io, branch))) {
@@ -97,7 +97,6 @@ async function checkResolve(io: Host, t: Tracked): Promise<void> {
   }
   const resolved = result?.ok === true && !(await picking(io, branch))
   await (resolved ? save(io, { ...t, status: 'approved', landedAt: Date.now() }) : failResolve(io, t, branch, result))
-  await applyNext(io, t.repo)
 }
 
 async function failResolve(io: Host, t: Tracked, branch: string, result: Record<string, unknown> | null): Promise<void> {
@@ -108,12 +107,29 @@ async function failResolve(io: Host, t: Tracked, branch: string, result: Record<
   await notify(io, `A docs conflict for ${t.key} could not be resolved: ${reason}`)
 }
 
+// Work on the machine-wide worktrees runs one pass at a time in this session; a pass asked for while one runs is
+// skipped, and the next timer tick picks up what it would have done.
+let running: Promise<void> | null = null
+
+export async function exclusive(work: () => Promise<void>): Promise<void> {
+  if (running) {
+    return
+  }
+  running = work().finally(() => {
+    running = null
+  })
+  await running
+}
+
 // Only the session holding the poll lease lands approvals on and pushes the machine-wide worktree; it runs this every
 // few seconds, so an approval or a resolved conflict ships soon after it happens.
 export async function advanceQueues(io: Host): Promise<void> {
-  if (!(await leaseIsMine(io))) {
-    return
+  if (await leaseIsMine(io)) {
+    await exclusive(() => advanceAll(io))
   }
+}
+
+async function advanceAll(io: Host): Promise<void> {
   const all = await allTracked(io)
   for (const t of all.filter((t) => t.status === 'resolving' && !t.pendingStart)) {
     await checkResolve(io, t)
@@ -156,7 +172,6 @@ async function followDocsPr(io: Host, repo: string, state: BranchState, branch: 
   }
   const baseSha = await rebuild(io, repo, branch, checkout)
   await saveBranchState(io, repo, { baseSha: baseSha || state.baseSha })
-  await applyNext(io, repo)
   await notify(io, merged ? `Docs PR merged for ${repo}.` : `Docs PR closed for ${repo}; its updates are back to approved.`)
 }
 
@@ -167,7 +182,6 @@ async function followMain(io: Host, repo: string, state: BranchState, branch: st
     const baseSha = await rebuild(io, repo, branch, checkout)
     await saveBranchState(io, repo, { ...state, pushing: false, baseSha: baseSha || state.baseSha })
   }
-  await applyNext(io, repo)
 }
 
 // Retry clears the failed pushes' reasons, so the next pass of advanceQueues pushes them again.

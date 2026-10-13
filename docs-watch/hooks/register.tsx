@@ -12,7 +12,7 @@ import { paneView } from './pane'
 import type { PaneActions } from './pane'
 import { startPending, tick } from './poll'
 import { blocking, checkRequirements, describeMissing, dueForPopup, popupText } from './requirements'
-import { branchState, branchStates, holdsLease, registerRepo, saveBranchState, toplevel, tracked, visible } from './store'
+import { branchState, branchStates, registerRepo, saveBranchState, toplevel, tracked, visible } from './store'
 import { describe } from './text'
 
 const PANE = 'docs-watch'
@@ -88,7 +88,6 @@ async function recheckAfterFailure($: Engine, tool: 'git' | 'gh'): Promise<void>
   await showRequirements($, missing, tool)
 }
 
-// Checks the requirements, shows what is missing, and registers this session's repository once nothing blocks.
 async function setUp($: Engine): Promise<Missing[]> {
   const io = host($)
   const missing = await checkRequirements(io, sessionCheckout)
@@ -109,13 +108,6 @@ async function ready($: Engine): Promise<boolean> {
   return blocked.length === 0
 }
 
-// Approvals and retries ship from this session when it holds the poll lease, else from the session that does.
-async function shipNow($: Engine): Promise<void> {
-  const io = host($)
-  if (await holdsLease(io, Date.now())) {
-    await advanceQueues(io)
-  }
-}
 
 // A press returns at once and the work runs after it, so the surface never waits on git, an agent spawn or the store.
 function inBackground($: Engine, action: string, work: () => Promise<unknown>): void {
@@ -155,7 +147,6 @@ function paneActions($: Engine): PaneActions {
     for (const t of items) {
       await approve(io, t)
     }
-    await shipNow($)
     await refreshShown($)
   }
   return {
@@ -206,7 +197,6 @@ function bandActions($: Engine, announced: string[]): BandActions {
     retry: () =>
       inBackground($, 'Retry', async () => {
         await clearPushErrors(io)
-        await shipNow($)
         await refreshShown($)
       }),
   }

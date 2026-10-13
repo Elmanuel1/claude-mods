@@ -1,12 +1,11 @@
 import type { Status, Tracked } from '../types'
-import { checkBranch, startMerger } from './branch'
+import { checkBranch, exclusive, startMerger } from './branch'
 import { checkDraft, startDraft, startWriter } from './draft'
 import type { Host } from './host'
 import { logError, runLogged } from './log'
 import { allTracked, holdsLease, registeredRepos, save, tracked } from './store'
 import { onlyDocsTestsCi, parseJson } from './text'
 
-// One poll: track the person's open PRs in every registered repository and move each tracked PR on, once `ready`.
 export async function tick(io: Host, ready: () => Promise<boolean>): Promise<void> {
   try {
     if (await ready()) {
@@ -28,9 +27,11 @@ async function poll(io: Host): Promise<void> {
   for (const t of await allTracked(io)) {
     await STEPS[t.status]?.(io, t)
   }
-  for (const repo of repos) {
-    await checkBranch(io, repo)
-  }
+  await exclusive(async () => {
+    for (const repo of repos) {
+      await checkBranch(io, repo)
+    }
+  })
 }
 
 async function trackOpen(io: Host, repo: string): Promise<void> {

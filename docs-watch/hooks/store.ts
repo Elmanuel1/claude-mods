@@ -44,8 +44,8 @@ export async function holdsLease(io: Host, now: number): Promise<boolean> {
 }
 
 export async function leaseIsMine(io: Host): Promise<boolean> {
-  const lease = (await io.get('lease')) as { owner: string } | undefined
-  return lease?.owner === me
+  const lease = (await io.get('lease')) as { owner: string; until: number } | undefined
+  return lease?.owner === me && lease.until > Date.now()
 }
 
 export async function registeredRepos(io: Host): Promise<string[]> {
