@@ -10,9 +10,27 @@ once you approve.
 /plugin install docs-watch --marketplace Elmanuel1/claude-mods
 ```
 
-Answer `y` to add the marketplace, then pick a scope. It needs `git` and the GitHub CLI (`gh`), signed in. If either is
-missing or `gh` is not signed in, a line above the prompt says which step fixes it (for example `gh auth login`), with a
-**Check again** button; nothing else runs until it passes.
+Answer `y` to add the marketplace, then pick a scope.
+
+## Requirements
+
+It needs `git`, the GitHub CLI (`gh`) logged in to github.com, and the Claude Code CLI (`claude`) on `PATH`. When a
+session starts, before each 5-minute check, and whenever a `git` or `gh` command fails, the mod checks each one and
+whether `gh`'s login can reach and push to the session's repository. Anything missing pops up as a toast naming it and
+the command that fixes it:
+
+| Missing | Fix shown |
+|---|---|
+| `git` | `xcode-select --install` (macOS), or https://git-scm.com/downloads |
+| `gh` | `brew install gh` (macOS), or https://cli.github.com |
+| `gh` not logged in | `gh auth login --hostname github.com` |
+| `claude` | `curl -fsSL https://claude.ai/install.sh \| bash` |
+| repository not reachable or read-only | `gh auth refresh --hostname github.com --scopes repo`, or log in as an account with write access |
+
+Each popup shows once per session, and again only when an action fails for that reason (at most once a minute). A
+missing `git` or `gh`, or `gh` not logged in, also keeps a line above the prompt with a **Check again** button, and
+nothing polls or drafts until it passes; the pane lists everything still missing under **Setup needed**. The checks read
+only exit codes and the repository permission, so no token is ever shown.
 
 ## How it works
 

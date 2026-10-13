@@ -1,7 +1,9 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface as Engine, Register } from 'claude-code'
 
-import type { BranchState, LogEntry, Status, Tracked } from '../types'
+import type { BranchState, LogEntry, Missing, Status, Tracked } from '../types'
+import { describeMissing, dueForPopup, githubRepoOf, missingRequirements, popupText } from './requirements'
+import type { Facts } from './requirements'
 import { describe, docsTitleFrom, lastLine, onlyDocsTestsCi, parseJson, prBody, prTitle, slug } from './text'
 
 const PANE = 'docs-watch'
@@ -19,15 +21,21 @@ const CLAUDE_APP = 'com.anthropic.claudefordesktop'
 const SHOWN: readonly Status[] = ['suggested', 'applying', 'resolving', 'approved', 'pushed', 'approving', 'pr-open', 'failed']
 const LOG_KEY = 'log'
 const LOG_LIMIT = 100
+const RECHECK_MS = 30 * 1000
+const POPUP_MS = 15 * 1000
 
 const shown = atom({ plugin: 'docs-watch', key: 'shown' } as const, null)
 const diff = atom({ plugin: 'docs-watch', key: 'diff' } as const, null)
 const setup = atom({ plugin: 'docs-watch', key: 'setup' } as const, null)
 const errors = atom({ plugin: 'docs-watch', key: 'errors' } as const, null)
 const branches = atom({ plugin: 'docs-watch', key: 'branches' } as const, null)
+const popups = atom({ plugin: 'docs-watch', key: 'popups' } as const, null)
 
 // This session's id for the poller lease: only one open session polls GitHub at a time.
 const me = Math.random().toString(36).slice(2)
+// The checkout this session runs in, for the repository access check; set at session start.
+let sessionCheckout: string | undefined
+let lastRecheck = Number.NEGATIVE_INFINITY
 
 // Every failure goes to the debug log and to the mod's own log, which the pane shows; logging itself never throws.
 async function logError($: Engine, where: string, detail: unknown, key?: string): Promise<void> {
@@ -59,6 +67,10 @@ async function runLogged($: Engine, where: string, argv: string[], cwd?: string,
   const result = await run($, argv, cwd)
   if (result.exitCode !== 0) {
     await logError($, where, `\`${argv.join(' ').slice(0, 200)}\` exited ${result.exitCode}: ${lastLine(result)}`, key)
+    const tool = argv[0]
+    if (tool === 'git' || tool === 'gh') {
+      await recheckAfterFailure($, tool)
+    }
   }
   return result
 }
@@ -68,22 +80,55 @@ async function recentErrors($: Engine): Promise<LogEntry[]> {
   return log.slice(-10).reverse()
 }
 
-// What stops the mod from working on this machine, as the step that fixes it; null when nothing does.
-async function setupProblem($: Engine): Promise<string | null> {
-  const git = await run($, ['git', '--version'])
-  if (git.exitCode !== 0) {
-    return 'docs-watch needs git: install it, then press Check again.'
-  }
-  const gh = await run($, ['gh', '--version'])
-  if (gh.exitCode !== 0) {
-    return 'docs-watch needs the GitHub CLI: install it from https://cli.github.com, then press Check again.'
-  }
-  const auth = await run($, ['gh', 'auth', 'status'])
-  if (auth.exitCode !== 0) {
-    return 'docs-watch needs GitHub access: run `gh auth login` in a terminal, then press Check again.'
-  }
-  return null
+// What this machine lacks: git, claude and gh on PATH, gh logged in to github.com, and this session's repository
+// reachable and pushable with that login. Only exit codes and the permission name are read, so no token is ever shown.
+async function checkRequirements($: Engine): Promise<Missing[]> {
+  const os = (await run($, ['uname'])).stdout.trim()
+  const git = (await run($, ['git', '--version'])).exitCode === 0
+  const claude = (await run($, ['claude', '--version'])).exitCode === 0
+  const gh = (await run($, ['gh', '--version'])).exitCode === 0
+  const ghAuth = gh ? (await run($, ['gh', 'auth', 'status', '--hostname', 'github.com'])).exitCode === 0 : null
+  const repo = git && ghAuth && sessionCheckout ? await repoAccess($, sessionCheckout) : null
+  return missingRequirements({ os, git, claude, gh, ghAuth, repo })
 }
+
+async function repoAccess($: Engine, checkout: string): Promise<Facts['repo']> {
+  const remote = await run($, ['git', '-C', checkout, 'remote', 'get-url', 'origin'])
+  const name = remote.exitCode === 0 ? githubRepoOf(remote.stdout) : null
+  if (!name) {
+    return null
+  }
+  const view = await run($, ['gh', 'repo', 'view', name, '--json', 'viewerPermission', '-q', '.viewerPermission'])
+  return { name, permission: view.exitCode === 0 ? view.stdout.trim() : null }
+}
+
+// The band shows what blocks the mod; a toast pops up each missing requirement once per session, and again when an
+// action using its tool failed.
+async function showRequirements($: Engine, missing: Missing[], failedTool?: string): Promise<void> {
+  await update($, setup, () => missing)
+  const now = await $.clock.now()
+  let due: Missing[] = []
+  await update($, popups, (seen) => {
+    const shownAt = seen ?? {}
+    due = dueForPopup(missing, shownAt, now, failedTool)
+    return { ...shownAt, ...Object.fromEntries(due.map((m) => [m.id, now])) }
+  })
+  if (due.length > 0) {
+    $.ui.toast(popupText(due), { timeoutMs: POPUP_MS })
+  }
+}
+
+async function recheckAfterFailure($: Engine, tool: 'git' | 'gh'): Promise<void> {
+  const now = await $.clock.now()
+  if (now - lastRecheck < RECHECK_MS) {
+    return
+  }
+  lastRecheck = now
+  const missing = await checkRequirements($)
+  await showRequirements($, missing, tool)
+}
+
+const blocking = (missing: Missing[]) => missing.filter((m) => m.blocks)
 
 async function stateDir($: Engine): Promise<string> {
   const env = await runLogged($, 'home', ['printenv', 'HOME'])
@@ -106,13 +151,17 @@ async function notify($: Engine, text: string): Promise<void> {
   await runLogged($, 'notify', ['osascript', '-e', script])
 }
 
+async function toplevel($: Engine): Promise<string | undefined> {
+  const top = await run($, ['git', 'rev-parse', '--show-toplevel'])
+  return top.exitCode === 0 ? top.stdout.trim() : undefined
+}
+
 // The repository this session works in, so the poller knows where to make worktrees.
 async function registerRepo($: Engine): Promise<void> {
-  const top = await run($, ['git', 'rev-parse', '--show-toplevel'])
-  if (top.exitCode !== 0) {
+  const checkout = sessionCheckout
+  if (!checkout) {
     return
   }
-  const checkout = top.stdout.trim()
   const name = await runLogged($, 'register repo', ['gh', 'repo', 'view', '--json', 'nameWithOwner', '-q', '.nameWithOwner'], checkout)
   if (name.exitCode !== 0) {
     return
@@ -418,9 +467,11 @@ async function tick($: Engine): Promise<void> {
 }
 
 async function poll($: Engine): Promise<void> {
-  const problem = await setupProblem($)
-  if (problem !== null) {
-    await logError($, 'setup', problem)
+  const missing = await checkRequirements($)
+  await showRequirements($, missing)
+  const blocked = blocking(missing)
+  if (blocked.length > 0) {
+    await logError($, 'setup', blocked.map(describeMissing).join('; '))
     return
   }
   if (!(await holdsLease($, Date.now()))) {
@@ -682,12 +733,12 @@ async function refreshShown($: Engine): Promise<void> {
 export const register: Register = (on) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'docs-watch', description: 'Review documentation updates drafted after your PRs merged' })
-    const problem = await setupProblem($)
-    await update($, setup, () => problem)
-    if (problem) {
-      $.ui.toast(problem)
+    sessionCheckout = await toplevel($)
+    const missing = await checkRequirements($)
+    await showRequirements($, missing)
+    if (blocking(missing).length === 0) {
+      await registerRepo($)
     }
-    await registerRepo($)
     await startPending($)
     await refreshShown($)
     $.clock.after(FIRST_TICK_MS, async () => {
@@ -735,28 +786,28 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = (await read($, shown)) ?? []
-    const problem = await read($, setup)
+    const blocked = blocking((await read($, setup)) ?? [])
     const waiting = current.filter((t) => t.status === 'suggested').length
     const states = Object.entries((await read($, branches)) ?? {})
     const announced = states.filter(([, b]) => b.announce && b.prUrl)
     const failed = states.filter(([, b]) => b.lastError && !b.pushing)
     const pushing = states.some(([, b]) => b.pushing)
-    if (e.props.hasSurvey || (waiting === 0 && announced.length === 0 && failed.length === 0 && !pushing && !problem)) {
+    if (e.props.hasSurvey || (waiting === 0 && announced.length === 0 && failed.length === 0 && !pushing && blocked.length === 0)) {
       return next(e)
     }
     const { Box, Button, Text } = $.ui.resolve(e)
-    if (problem) {
+    if (blocked.length > 0) {
       return (
         <Box>
-          <Text color="yellow">{`${problem} `}</Text>
+          <Text color="yellow">{`docs-watch: ${blocked.map(describeMissing).join('. ')}. Then press Check again. `}</Text>
           <Button
             key="recheck"
             label="Check again"
             onPress={() =>
               inBackground($, 'Check', async () => {
-                const again = await setupProblem($)
-                await update($, setup, () => again)
-                if (again === null) {
+                const again = await checkRequirements($)
+                await showRequirements($, again)
+                if (blocking(again).length === 0) {
                   await registerRepo($)
                   $.ui.toast('docs-watch is set up.')
                 }
@@ -817,6 +868,17 @@ export const register: Register = (on) => {
     const current = (await read($, shown)) ?? []
     const open = await read($, diff)
     const log = (await read($, errors)) ?? []
+    const missing = (await read($, setup)) ?? []
+    const setupList = missing.length > 0 && (
+      <Box key="setup" flexDirection="column">
+        <Text bold color="yellow">Setup needed</Text>
+        {missing.map((m) => (
+          <Text key={`setup-${m.id}`} color="yellow">
+            {describeMissing(m)}
+          </Text>
+        ))}
+      </Box>
+    )
     const errorList = log.length > 0 && (
       <Box key="errors" flexDirection="column">
         <Text bold>Recent errors</Text>
@@ -840,6 +902,7 @@ export const register: Register = (on) => {
     if (current.length === 0) {
       return (
         <Box flexDirection="column">
+          {setupList}
           <Text dimColor>No documentation updates waiting.</Text>
           {errorList}
         </Box>
@@ -849,6 +912,7 @@ export const register: Register = (on) => {
     const suggested = current.filter((t) => t.status === 'suggested')
     return (
       <Box flexDirection="column">
+        {setupList}
         {suggested.length > 1 && (
           <Button
             key="approve-all"

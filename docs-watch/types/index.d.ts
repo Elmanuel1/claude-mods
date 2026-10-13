@@ -62,14 +62,27 @@ export type BranchState = {
 
 export type LogEntry = { at: number; where: string; message: string; key?: string }
 
+/** A tool the mod needs that is missing, or a login it needs that does not work, with the step that fixes it. */
+export type Missing = {
+  id: string
+  /** a failed command of this tool brings the popup back */
+  tool: 'git' | 'gh' | 'claude'
+  what: string
+  fix: string
+  /** nothing polls or drafts until it is fixed */
+  blocks: boolean
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'docs-watch': {
       shown: Tracked[] | null
       diff: { key: string; text: string } | null
-      setup: string | null
+      setup: Missing[] | null
       errors: LogEntry[] | null
       branches: Record<string, BranchState> | null
+      /** when each requirement's popup last showed in this session */
+      popups: Record<string, number> | null
     }
   }
 }
