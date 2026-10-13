@@ -21,16 +21,16 @@ missing or `gh` is not signed in, a line above the prompt says which step fixes 
    session starts, then every 5 minutes) for your open pull requests in those repositories, and notices when one merges.
    Only one session polls at a time.
 3. **Drafting.** A merged pull request that changed more than docs, tests or CI gets a draft: the mod creates a worktree
-   of the default branch under `~/.claude/docs-watch/work/` and its `docs-watch:docs-writer` agent edits only
-   documentation files there, following the repository's own `CLAUDE.md`, `AGENTS.md` or `CONTRIBUTING.md`. Nothing is
-   committed.
+   of the default branch under `~/.claude/docs-watch/work/`, and a subagent runs the bundled `docs-watch:update-docs`
+   skill there. It edits only documentation files, following the repository's own `CLAUDE.md`, `AGENTS.md` or
+   `CONTRIBUTING.md`. Nothing is committed. You can also run the skill yourself: `/docs-watch:update-docs 848`.
 4. **Review.** A line above the prompt says "N docs update(s) suggested" in every open session, with a desktop
    notification on macOS. `/docs-watch` (or Review) opens the list: the summary, the diff, **Approve** and **Dismiss**.
-5. **Pull request.** Approve runs the `docs-watch:docs-pr` agent: it commits on `docs/after-pr-<number>`, pushes, and runs
-   `gh pr create`. Any hook you have on `gh pr create` reviews it as usual. You get the link as a toast and a
-   notification. It never pushes to the default branch and never merges.
+5. **Pull request.** **Approve** commits the draft on `docs/after-pr-<number>`, pushes it and runs `gh pr create`; you
+   get the link as a toast and a notification. **Redo with a note** drafts it again with your comment (for example "also
+   update the README"); where the pane has no text field, `/docs-watch redo <owner/repo#number> <note>` does the same. It never pushes to the default branch and never merges.
 
 ## Limits
 
 - It checks only while a Claude Code session is open; a merge while none is open is picked up at the next session start.
-- Drafting and opening the PR run as subagents in your session, on your plan.
+- Drafting runs as a subagent in your session, on your plan. Approving runs `git` and `gh` only.
