@@ -59,6 +59,9 @@ function answer(argv: readonly string[], machine: Machine): ProcessRunResult {
     [`git -C ${HOME}/.claude/docs-watch/branch/o-r rev-parse -q --verify CHERRY_PICK_HEAD`]: fail(1, ''),
     [`git -C ${HOME}/.claude/docs-watch/branch/o-r log --reverse --format=%s origin/main..HEAD`]: ok('docs: document retries'),
   }
+  if (command.startsWith('gh pr create')) {
+    return ok('https://github.com/o/r/pull/9')
+  }
   if (command.startsWith('gh pr list') && !machine.loggedIn) {
     return fail(4, 'HTTP 401: Bad credentials')
   }
@@ -151,5 +154,19 @@ test('gh not logged in: an approval whose gh command fails brings the popup back
   await pane.press({ key: `approve-${SUGGESTED.key}` })
 
   expect(loginPopups()).toHaveLength(2)
+  await pane.unmount()
+})
+
+test('all present: Approve pushes docs/updates with git and opens one PR with gh, titled by what the docs cover', async ($, on) => {
+  const { toasts, ran } = world(on, ALL_PRESENT, { 'repo:o/r': CHECKOUT, [`pr:${SUGGESTED.key}`]: SUGGESTED })
+  await $.session.start(START)
+
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await pane.press({ key: `approve-${SUGGESTED.key}` })
+
+  expect(ran).toContain(`git -C ${HOME}/.claude/docs-watch/branch/o-r push --force-with-lease -u origin docs/updates`)
+  expect(ran.find((c) => c.startsWith('gh pr create'))).toContain('--base main --head docs/updates --title docs: document retries')
+  expect(toasts).toContain('Docs PR updated: https://github.com/o/r/pull/9')
+  expect(await pane.find({ type: 'Text', text: 'In the docs PR: https://github.com/o/r/pull/9' })).toBeDefined()
   await pane.unmount()
 })

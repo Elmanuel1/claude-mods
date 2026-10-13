@@ -1,4 +1,5 @@
 import type { Missing } from '../types'
+import type { Host } from './host'
 
 // A requirement's popup comes back after a failed action at most this often, so one action's several failing
 // commands raise it once.
@@ -15,6 +16,30 @@ export type Facts = {
   /** this session's GitHub repository; `permission` is null when gh cannot reach it */
   repo: { name: string; permission: string | null } | null
 }
+
+// What this machine lacks: git, claude and gh on PATH, gh logged in to github.com, and the session's repository
+// reachable and pushable with that login. Only exit codes and the permission name are read, so no token is ever shown.
+export async function checkRequirements(io: Host, checkout: string | undefined): Promise<Missing[]> {
+  const os = (await io.run(['uname'])).stdout.trim()
+  const git = (await io.run(['git', '--version'])).exitCode === 0
+  const claude = (await io.run(['claude', '--version'])).exitCode === 0
+  const gh = (await io.run(['gh', '--version'])).exitCode === 0
+  const ghAuth = gh ? (await io.run(['gh', 'auth', 'status', '--hostname', 'github.com'])).exitCode === 0 : null
+  const repo = git && ghAuth && checkout ? await repoAccess(io, checkout) : null
+  return missingRequirements({ os, git, claude, gh, ghAuth, repo })
+}
+
+async function repoAccess(io: Host, checkout: string): Promise<Facts['repo']> {
+  const remote = await io.run(['git', '-C', checkout, 'remote', 'get-url', 'origin'])
+  const name = remote.exitCode === 0 ? githubRepoOf(remote.stdout) : null
+  if (!name) {
+    return null
+  }
+  const view = await io.run(['gh', 'repo', 'view', name, '--json', 'viewerPermission', '-q', '.viewerPermission'])
+  return { name, permission: view.exitCode === 0 ? view.stdout.trim() : null }
+}
+
+export const blocking = (missing: Missing[]) => missing.filter((m) => m.blocks)
 
 export function missingRequirements(facts: Facts): Missing[] {
   const mac = facts.os === 'Darwin'
@@ -77,7 +102,7 @@ export function missingRequirements(facts: Facts): Missing[] {
 }
 
 // `owner/name` from a GitHub remote URL (https or ssh); null for any other host.
-export function githubRepoOf(remote: string): string | null {
+function githubRepoOf(remote: string): string | null {
   const match = /github\.com[:/]([^/\s]+\/[^/\s]+?)(\.git)?\/?$/.exec(remote.trim())
   return match?.[1] ?? null
 }
