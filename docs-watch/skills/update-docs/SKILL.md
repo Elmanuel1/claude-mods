@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires git and the GitHub CLI (gh), signed in. Designed for Claude Code.
 metadata:
   author: Elmanuel1
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # Update docs after a merged pull request
