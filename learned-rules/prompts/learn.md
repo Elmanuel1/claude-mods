@@ -36,13 +36,12 @@ directory: {{CWD}}). Turn their corrections into durable rules, and nothing else
    "Enforce: <status>; <enforcer file, or new: tool>; <what it checks, one line>" (for none:
    "Enforce: none; -; <why no tool can see it>"). Commits that only add a skill trigger have no Enforce line.
    Never push, never open a PR.
-6. Personal skills live in ~/.claude/skills, a local git repo: edit there and commit each rule with
-   git -C ~/.claude/skills.
-7. Repo files: never edit the working directory. Run git fetch origin first. Use the worktree at
-   ~/.claude/learned/repo-worktree on the local branch docs/learned-rules: create it from origin/main if it does not
-   exist; if it exists and has no commits ahead of origin/main, reset it to origin/main
-   (git -C <worktree> reset --hard origin/main) so new rules start from the latest main; if it has commits ahead,
-   rebase it onto origin/main. Commit each rule there.
+6. Personal rules: edit files under {{SKILLS}} and commit each rule with exactly
+   `git -C {{SKILLS}} add <file>` and `git -C {{SKILLS}} commit -m <subject> -m <body>`.
+7. Repo rules: never edit the working directory. The repo worktree is {{WORKTREE}}, on the branch
+   docs/learned-rules, already up to date with the latest main. Edit the repo files there and commit each rule with
+   exactly `git -C {{WORKTREE}} add <file>` and `git -C {{WORKTREE}} commit -m <subject> -m <body>`. Those are the only git
+   commands you can run.
 8. Print a short summary: each correction, the file and section it went to and its Enforce status, or why it was
    skipped.
 9. The last line of your output must be exactly "SUGGESTED: <n>", n being the number of rule commits you made.

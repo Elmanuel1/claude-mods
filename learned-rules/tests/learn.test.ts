@@ -84,6 +84,10 @@ test('a session with corrections is queued when it ends and learned from by an o
   expect(spawned).toHaveLength(1)
   expect(spawned[0]?.argv.slice(0, 2)).toEqual(['claude', '-p'])
   expect(spawned[0]?.env).toEqual({ LEARN_FROM_CORRECTIONS: '1' })
+  const allowed = spawned[0]?.argv[spawned[0].argv.indexOf('--allowedTools') + 1] ?? ''
+  expect(allowed).toContain('Bash(git -C /home/tester/.claude/learned/repo-worktree commit *)')
+  expect(allowed).toContain('Edit(~/.claude/skills/**)')
+  expect(allowed).not.toContain('Bash(git -C *)')
   expect(spawned[0]?.input).toMatch(/^Learn from \/work\/repo\./)
   expect(spawned[0]?.input).toMatch(/- config\/pmd\/rules\.xml\n- \.github\/workflows\/build\.yml/)
   expect(spawned[0]?.input).not.toMatch(/src\/Main\.java/)

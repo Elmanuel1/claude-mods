@@ -24,8 +24,9 @@ export async function markReviewed(io: Host, rule: Rule, verdict: 'accepted' | '
 export async function scan(io: Host): Promise<Pending> {
   const worktree = repoPath(io, 'project')
   await fetchMain(io, worktree)
-  if (await mergedIntoMain(io, worktree)) {
-    await resetToMain(io, worktree)
+  let unpushed = await aheadOfMain(io, worktree)
+  if (unpushed > 0 && (await squashMerged(io, worktree)) && (await resetToMain(io, worktree))) {
+    unpushed = 0
   }
 
   const reviewed = await reviewedKeys(io)
@@ -33,10 +34,17 @@ export async function scan(io: Host): Promise<Pending> {
   const personal = await ruleCommits(io, 'personal')
   const rules = [...project, ...personal].filter(rule => !reviewed[rule.key])
 
-  const ahead = await io.run(['git', '-C', worktree, 'rev-list', '--count', `origin/main..${BRANCH}`])
-  const unpushed = ahead.exitCode === 0 ? Number(ahead.stdout.trim()) : 0
-
   return { rules, unpushed }
+}
+
+/** Rule commits on the branch that its rules PR has not brought into main yet. */
+export async function hasOpenRules(io: Host, worktree: string): Promise<boolean> {
+  return (await aheadOfMain(io, worktree)) > 0 && !(await squashMerged(io, worktree))
+}
+
+async function aheadOfMain(io: Host, worktree: string): Promise<number> {
+  const ahead = await io.run(['git', '-C', worktree, 'rev-list', '--count', `origin/main..${BRANCH}`])
+  return ahead.exitCode === 0 ? Number(ahead.stdout.trim()) : 0
 }
 
 async function ruleCommits(io: Host, repo: RuleRepo): Promise<Rule[]> {
@@ -85,23 +93,20 @@ async function fetchMain(io: Host, worktree: string): Promise<void> {
 
 // The rules PR is squash-merged, so its commits stay "ahead" of main by hash forever. The branch is merged when
 // merging it into main would leave main's tree unchanged.
-async function mergedIntoMain(io: Host, worktree: string): Promise<boolean> {
-  const ahead = await io.run(['git', '-C', worktree, 'rev-list', '--count', `origin/main..${BRANCH}`])
-  if (ahead.exitCode !== 0 || Number(ahead.stdout.trim()) === 0) {
-    return false
-  }
+async function squashMerged(io: Host, worktree: string): Promise<boolean> {
   const merged = await io.run(['git', '-C', worktree, 'merge-tree', '--write-tree', 'origin/main', BRANCH])
   const main = await io.run(['git', '-C', worktree, 'rev-parse', 'origin/main^{tree}'])
-  return merged.exitCode === 0 && main.exitCode === 0 && merged.stdout.trim().split('\n')[0] === main.stdout.trim()
+  const mainTree = main.exitCode === 0 ? main.stdout.trim() : ''
+  return merged.exitCode === 0 && mainTree !== '' && merged.stdout.trim().split('\n')[0] === mainTree
 }
 
 // Only a clean worktree is reset, so a learning run that is mid-commit keeps its work.
-async function resetToMain(io: Host, worktree: string): Promise<void> {
+export async function resetToMain(io: Host, worktree: string): Promise<boolean> {
   const status = await io.run(['git', '-C', worktree, 'status', '--porcelain'])
   if (status.exitCode !== 0 || status.stdout.trim().length > 0) {
-    return
+    return false
   }
-  await io.run(['git', '-C', worktree, 'reset', '-q', '--hard', 'origin/main'])
+  return (await io.run(['git', '-C', worktree, 'reset', '-q', '--hard', 'origin/main'])).exitCode === 0
 }
 
 // Rejecting drops the rule: a project commit leaves the branch, a personal one is reverted.
