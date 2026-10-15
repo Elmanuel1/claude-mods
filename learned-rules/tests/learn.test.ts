@@ -1,0 +1,123 @@
+import { expect, mock, test } from 'claude-code/testing'
+import type { On, ProcessRunResult } from 'claude-code'
+import type { Engine } from 'claude-code/testing'
+
+const CORRECTION = "don't call OffsetDateTime.now() without a zone, always take it as OffsetDateTime.now(ZoneOffset.UTC). "
+
+const ran = (stdout: string, exitCode = 0): { value: ProcessRunResult } => ({
+  value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+})
+
+const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer' as const } })
+
+type Spawned = { argv: string[]; input?: string; env?: Record<string, string> }
+
+// A repo with one custom PMD ruleset on a GitHub plan without rulesets; the learning run makes one rule commit.
+function world(on: On, env: Record<string, string> = {}): { spawned: Spawned[]; notified: string[]; settle: () => Promise<void> } {
+  const clock = mock.clock(on)
+  mock.store(on, { reviewed: {} })
+  mock.env(on, { HOME: '/home/tester', ...env })
+  on('session.id', () => ({ value: 'open-session' }))
+  const spawned: Spawned[] = []
+  const notified: string[] = []
+
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  on('classic.SessionEnd', () => ({}))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.notify', ($, e) => {
+    notified.push(e.text)
+    return { value: { isSent: true, channel: 'terminal_bell' } }
+  })
+  on('turn.complete', () => ({ text: '' }))
+  on('settings.read', () => ({ value: { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'gate.sh' }] }] } } }))
+  on('fs.read', ($, e) => ({ value: e.path.endsWith('prompts/learn.md') ? 'Learn from {{CWD}}.' : '' }))
+  on('fs.write', () => ({ value: undefined }))
+  on('process.spawn', async function* ($, e) {
+    spawned.push({ argv: [...e.argv], input: e.input, env: e.env })
+    yield { stream: 'stdout' as const, text: 'Added one rule.\nSUGGESTED: 1\n' }
+    return { value: { code: 0, signal: null } }
+  })
+  on('process.run', ($, e) => {
+    const argv = [...e.argv]
+    if (argv.includes('--show-toplevel')) {
+      return ran('/work/repo\n')
+    }
+    if (argv.includes('ls-tree')) {
+      return ran('config/pmd/rules.xml\nsrc/Main.java\n.github/workflows/build.yml\n')
+    }
+    if (argv.includes('get-url')) {
+      return ran('git@github.com:acme/app.git\n')
+    }
+    if (argv[0] === 'gh') {
+      return ran('{"message":"Upgrade to GitHub Pro"}', 1)
+    }
+    return ran('')
+  })
+
+  // turn.complete starts the learning run without waiting for it; advancing the clock lets it finish.
+  return { spawned, notified, settle: () => clock.advance(1) }
+}
+
+const scanned = ($: Engine) => $.turn.complete({ answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' })
+
+test('a session with corrections is queued when it ends and learned from by an open session', async ($, on) => {
+  const { spawned, notified, settle } = world(on)
+  for (let i = 0; i < 6; i++) {
+    await $.prompt.submit(typed(CORRECTION))
+  }
+  await $.classic.SessionEnd({ reason: 'prompt_input_exit', session_id: 'open-session', cwd: '/work/repo' })
+
+  await scanned($)
+  await settle()
+
+  expect(spawned).toHaveLength(1)
+  expect(spawned[0]?.argv.slice(0, 2)).toEqual(['claude', '-p'])
+  expect(spawned[0]?.env).toEqual({ LEARN_FROM_CORRECTIONS: '1' })
+  expect(spawned[0]?.input).toMatch(/^Learn from \/work\/repo\./)
+  expect(spawned[0]?.input).toMatch(/- config\/pmd\/rules\.xml\n- \.github\/workflows\/build\.yml/)
+  expect(spawned[0]?.input).not.toMatch(/src\/Main\.java/)
+  expect(spawned[0]?.input).toMatch(/rulesets not readable: Upgrade to GitHub Pro/)
+  expect(spawned[0]?.input).toMatch(/user settings Stop: gate\.sh/)
+  expect(spawned[0]?.input).toContain(CORRECTION)
+  expect(notified).toEqual(['1 rule(s) suggested. Accept or reject each with /learned.'])
+  await scanned($)
+  await settle()
+  expect(spawned).toHaveLength(1)
+})
+
+test('a notification is not a correction', async ($, on) => {
+  const { spawned, settle } = world(on)
+  for (let i = 0; i < 6; i++) {
+    await $.prompt.submit({ text: CORRECTION, wait: false, origin: { kind: 'task-notification' } })
+  }
+  await $.classic.SessionEnd({ reason: 'prompt_input_exit', session_id: 'open-session', cwd: '/work/repo' })
+
+  await scanned($)
+  await settle()
+
+  expect(spawned).toHaveLength(0)
+})
+
+test('a session with almost nothing typed is not queued', async ($, on) => {
+  const { spawned, settle } = world(on)
+  await $.prompt.submit(typed('fix the test'))
+  await $.classic.SessionEnd({ reason: 'prompt_input_exit', session_id: 'open-session', cwd: '/work/repo' })
+
+  await scanned($)
+  await settle()
+
+  expect(spawned).toHaveLength(0)
+})
+
+test("the learning run's own session records and queues nothing", async ($, on) => {
+  const { spawned, settle } = world(on, { LEARN_FROM_CORRECTIONS: '1' })
+  for (let i = 0; i < 6; i++) {
+    await $.prompt.submit(typed(CORRECTION))
+  }
+  await $.classic.SessionEnd({ reason: 'prompt_input_exit', session_id: 'open-session', cwd: '/work/repo' })
+
+  await scanned($)
+  await settle()
+
+  expect(spawned).toHaveLength(0)
+})

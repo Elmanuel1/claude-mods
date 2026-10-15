@@ -1,0 +1,9 @@
+{
+  "name": "learned-rules",
+  "version": "0.2.0",
+  "description": "Turns your corrections into skill and repo rules you accept one by one, each with how a static check could enforce it",
+  "types": "./types/index.d.ts",
+  "author": {
+    "name": "Elmanuel1"
+  }
+}
