@@ -5,19 +5,21 @@ const RUN_TOOLS = 'Read,Grep,Glob,Edit,Write,Bash'
 const POWER_KEY = /^["']?(hooks|allowed-tools)["']?\s*:/
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/
 
-// The typed text steers the run, pasted text included. --restricted ignores the user's settings files (which may
-// allow every command) and confines the file tools to the added directories; the run may write only Markdown rules
-// and the skill-trigger list, and its only commands are git add and commit on the two repos the mod prepared.
-export function runArgs(io: Host, skills: string, worktree: string): string[] {
-  const commits = [skills, worktree].flatMap(repo => [`Bash(git -C ${repo} add *)`, `Bash(git -C ${repo} commit *)`])
-  // A path rule's leading / is read relative to the settings file, so the editable paths are written from ~.
+// The typed text steers the run, pasted text included. It loads only project settings, from an empty folder it runs
+// in, so none of the user's settings (which may allow every command), hooks or plugins apply; it may edit only
+// Markdown rules and the skill-trigger list, and its only commands are git add and commit on the repos the mod
+// prepared. (--restricted would refuse its edits: it treats SKILL.md and CLAUDE.md as sensitive, and -p has nobody to
+// approve them.)
+export function runArgs(repos: string[]): string[] {
+  const commits = repos.flatMap(repo => [`Bash(git -C ${repo} add *)`, `Bash(git -C ${repo} commit *)`])
+  // An Edit rule covers every file-editing tool. A path rule's leading / is read relative to the settings file, so
+  // the editable paths are written from ~.
   const editable = ['~/.claude/skills/**/*.md', '~/.claude/skills/skill-triggers.json', '~/.claude/learned/repo-worktree/**/*.md']
-    .flatMap(path => [`Edit(${path})`, `Write(${path})`])
-  const denied = ['Edit(**/.git/**)', 'Write(**/.git/**)', 'Edit(**/.git)', 'Write(**/.git)', 'Bash(git * -c *)', 'Bash(git * push*)']
+  const denied = ['Edit(**/.git/**)', 'Edit(**/.git)', 'Bash(git * -c *)', 'Bash(git * push*)']
   return [
-    '-p', '--restricted', '--strict-mcp-config', '--disable-slash-commands', '--tools', RUN_TOOLS,
-    '--add-dir', `${io.home}/.claude`, '--add-dir', io.pluginRoot, '--permission-mode', 'default',
-    '--allowedTools', ['Read', 'Grep', 'Glob', ...editable, ...commits].join(','),
+    '-p', '--setting-sources', 'project', '--strict-mcp-config', '--disable-slash-commands', '--tools', RUN_TOOLS,
+    ...repos.flatMap(repo => ['--add-dir', repo]), '--permission-mode', 'default',
+    '--allowedTools', ['Read', 'Grep', 'Glob', ...editable.map(path => `Edit(${path})`), ...commits].join(','),
     '--disallowedTools', denied.join(','),
   ]
 }

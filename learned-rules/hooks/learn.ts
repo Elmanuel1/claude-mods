@@ -85,7 +85,10 @@ async function nextReady(io: Host, due: QueuedSession[]): Promise<Ready | undefi
 
 async function learnFrom(io: Host, skills: string, { item, worktree }: Ready): Promise<void> {
   const before = await snapshot(io, skills)
-  const { code, output } = await io.claude(runArgs(io, skills, repoPath(io, 'project')), await buildPrompt(io, skills, item, worktree), item.cwd, runEnv(io))
+  const repos = worktree === 'ready' || worktree === 'unsynced' ? [skills, repoPath(io, 'project')] : [skills]
+  const runDir = `${io.home}/.claude/learned/run`
+  await io.write(`${runDir}/README.md`, 'The learning run starts here, in a folder with no settings.\n')
+  const { code, output } = await io.claude(runArgs(repos), await buildPrompt(io, skills, item, worktree), runDir, runEnv(io))
   const undone = await undoSkillPowers(io, skills, before)
   if (undone > 0) {
     io.notify(`Undid hooks or allowed-tools the learning run added to ${undone} skill file(s); those rules are rejected.`)

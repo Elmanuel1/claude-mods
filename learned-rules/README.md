@@ -44,8 +44,8 @@ OS notification tool.
    personal ones in `~/.claude/skills` (made a git repo on first use), repo ones on the branch `docs/learned-rules` in
    a worktree at `~/.claude/learned/repo-worktree` that the mod brings up to date with main before the run. The run
    is kept to that job, since text pasted into a session reaches it:
-   - it runs in `--restricted` mode, which ignores your settings files (they may allow every command), with no MCP
-     servers or skills;
+   - it loads only project settings, from an empty folder it starts in, so none of your settings (which may allow
+     every command), hooks, plugins, MCP servers or skills apply;
    - it may write only Markdown files (and `skill-triggers.json`) under those two places, never inside `.git`;
    - its only commands are `git add` and `git commit` on those two repositories, with git hooks turned off;
    - personal rules are live once written, so a skill file whose `hooks:` or `allowed-tools:` frontmatter the run

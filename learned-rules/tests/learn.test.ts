@@ -122,7 +122,8 @@ test('a session with corrections is queued when it ends and learned from by an o
   const allowed = spawned[0]?.argv[spawned[0].argv.indexOf('--allowedTools') + 1] ?? ''
   expect(allowed).toContain('Bash(git -C /home/tester/.claude/learned/repo-worktree commit *)')
   expect(allowed).toContain('Edit(~/.claude/skills/**/*.md)')
-  expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--restricted', '--strict-mcp-config', '--disable-slash-commands']))
+  expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--setting-sources', 'project', '--strict-mcp-config', '--disable-slash-commands']))
+  expect(spawned[0]?.argv).not.toContain('--restricted')
   expect(spawned[0]?.env).toMatchObject({ GIT_CONFIG_KEY_0: 'core.hooksPath' })
   expect(allowed).not.toContain('Bash(git -C *)')
   expect(spawned[0]?.input).toMatch(/^Learn from \/work\/repo\./)
