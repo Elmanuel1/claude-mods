@@ -15,13 +15,14 @@ type Spawned = { argv: string[]; input?: string; env?: Record<string, string> }
 // A repo with one custom PMD ruleset on a GitHub plan without rulesets; the learning run makes one rule commit.
 type Options = { env?: Record<string, string>; exitCode?: number; leaseTakenAt?: number; addsHooks?: boolean }
 
-function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, addsHooks = false }: Options = {}): { spawned: Spawned[]; notified: string[]; calls: string[][]; settle: (ms?: number) => Promise<void> } {
+function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, addsHooks = false }: Options = {}): { spawned: Spawned[]; notified: string[]; calls: string[][]; written: string[]; settle: (ms?: number) => Promise<void> } {
   const clock = mock.clock(on)
   mock.store(on, { reviewed: {} })
   mock.env(on, { HOME: '/home/tester', ...env })
   on('session.id', () => ({ value: 'open-session' }))
   const spawned: Spawned[] = []
   const calls: string[][] = []
+  const written: string[] = []
   const notified: string[] = []
 
   on('prompt.submit', ($, e) => ({ text: e.text }))
@@ -40,9 +41,15 @@ function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, addsHooks = false
     if (e.path.endsWith('lint/SKILL.md')) {
       return { value: '---\nname: lint\n"hooks":\n  PostToolUse: []\n---\nBody\n' }
     }
-    return { value: e.path.endsWith('ship/SKILL.md') ? '---\nname: ship\nhooks:\n  Stop: []\n---\nNew body\n' : '' }
+    if (e.path.endsWith('mine/SKILL.md')) {
+      return { value: '---\nname: mine\nallowed-tools: Bash\n---\n' }
+    }
+    return { value: e.path.endsWith('ship/SKILL.md') ? '---\nname: ship\ndescription: new\nhooks:\n  Stop: []\n---\nNew body\n' : '' }
   })
-  on('fs.write', () => ({ value: undefined }))
+  on('fs.write', ($, e) => {
+    written.push(e.path)
+    return { value: undefined }
+  })
   on('process.spawn', async function* ($, e) {
     spawned.push({ argv: [...e.argv], input: e.input, env: e.env })
     yield { stream: 'stdout' as const, text: exitCode === 0 ? 'Added one rule.\nSUGGESTED: 1\n' : 'Not logged in.\n' }
@@ -58,7 +65,13 @@ function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, addsHooks = false
       return ran('---\nname: lint\n---\nBody\n')
     }
     if (argv.includes('show') && argv.some(arg => arg.endsWith(':ship/SKILL.md'))) {
-      return ran('---\nname: ship\nhooks:\n  Stop: []\n---\nOld body\n')
+      return ran('---\nname: ship\ndescription: old\nhooks:\n  Stop: []\n---\nOld body\n')
+    }
+    if (argv.includes('show') && argv.some(arg => arg.endsWith(':mine/SKILL.md'))) {
+      return ran('---\nname: mine\nallowed-tools: Bash\n---\n')
+    }
+    if (argv.includes('--others')) {
+      return ran(addsHooks ? 'mine/SKILL.md\n' : '')
     }
     if (argv.includes('log') && argv.includes('--format=%s')) {
       return ran('rule: lint on save\n')
@@ -88,7 +101,7 @@ function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, addsHooks = false
   })
 
   // turn.complete starts the learning run without waiting for it; advancing the clock lets it finish.
-  return { spawned, notified, calls, settle: (ms = 1) => clock.advance(ms) }
+  return { spawned, notified, calls, written, settle: (ms = 1) => clock.advance(ms) }
 }
 
 const scanned = ($: Engine) => $.turn.complete({ answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' })
@@ -195,14 +208,16 @@ test('a lease another session took in the last hour keeps this session from runn
   expect(spawned).toHaveLength(0)
 })
 
-test('a skill whose frontmatter gained hooks goes back to the snapshot; one that only changed its body stays', async ($, on) => {
-  const { notified, calls, settle } = world(on, { addsHooks: true })
+test('only a skill whose hooks or allowed-tools changed goes back to the snapshot', async ($, on) => {
+  const { notified, calls, written, settle } = world(on, { addsHooks: true })
   await endTypedSession($)
 
   await scanned($)
   await settle()
 
-  expect(calls).toContainEqual(expect.arrayContaining(['checkout', '--', 'lint/SKILL.md']))
-  expect(calls.some(argv => argv.includes('checkout') && argv.includes('ship/SKILL.md'))).toBe(false)
+  // lint gained a quoted "hooks":, ship only changed its description, mine is the user's own untracked skill.
+  expect(written).toContain('/home/tester/.claude/skills/lint/SKILL.md')
+  expect(written.some(path => path.endsWith('ship/SKILL.md') || path.endsWith('mine/SKILL.md'))).toBe(false)
+  expect(calls.some(argv => argv.includes('clean') || (argv.includes('rm') && argv.includes('mine/SKILL.md')))).toBe(false)
   expect(notified).toContain('Undid hooks or allowed-tools the learning run added to 1 skill file(s); those rules are rejected.')
 })

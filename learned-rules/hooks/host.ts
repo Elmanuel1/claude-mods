@@ -1,6 +1,6 @@
 export type RunResult = { exitCode: number; stdout: string; stderr: string }
 
-export type RunInit = { cwd?: string; timeoutMs?: number }
+export type RunInit = { cwd?: string; timeoutMs?: number; env?: Record<string, string> }
 
 // The engine follows `$` only within the hooks module's own file, so register.tsx builds this from `$` and the
 // other files take it instead.
