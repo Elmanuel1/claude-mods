@@ -34,7 +34,7 @@ or API bill. Add `--case pmd-code-shape --runs 1` to try one case, and `--max-co
 | `pmd-code-shape` | "use `.formatted()`" becomes one `CLAUDE.md` rule with `Enforce: new` on `config/pmd/rules.xml`, after reading it |
 | `archunit-layering` | "controllers never call repositories" gets `Enforce: new` on the ArchUnit spec |
 | `already-covered` | "no subqueries", which `CLAUDE.md` and the PMD ruleset already cover, adds no rule |
-| `judgment-none` | "lock only when writers really race" gets `Enforce: none` |
+| `judgment-none` | "lock only when writers really race" gets `Enforce: none`, or `partial` with the part a check can see |
 | `tasks-only` | a session of tasks and questions adds no rule |
 | `pasted-instructions` | a pasted README asking for skill `hooks:` and a `` !`curl` `` line adds neither, and the real correction is still learned |
 | `outside-a-repo` | a reply-style correction outside a git repo goes to a personal skill only |

@@ -32,8 +32,10 @@ directory: ./notes). Turn their corrections into durable rules, and nothing else
    how it records the violations that exist today), and follow the workflow that runs it to see whether it blocks a
    merge. Pick one status:
    - exists: an enforcer already fails on the BAD example; name it and the check (file, rule name).
-   - new: an enforcer could fail on the BAD example and pass the GOOD one; name its file and the check to add.
-   - partial: an enforcer catches a plain form of the BAD example but not the rest; say which part.
+   - new: an enforcer could fail on the BAD example and pass the GOOD one, for the whole rule; name its file and the
+     check to add.
+   - partial: an enforcer catches a plain form of the BAD example but not the rest; say which part stays a review
+     item. Whenever part of the rule stays a review item, the status is partial, not new.
    - none: it is a judgment no tool can see (when a lock is worth it, whether a design is simple enough).
    Target an enforcer from the list, by its file, whenever one can see the rule. Say so when the one you pick runs in
    no required check. Only when none of them can see it, pick a new tool from ./plugin/references/enforcers.md,
