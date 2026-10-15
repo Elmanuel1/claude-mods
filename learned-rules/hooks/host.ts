@@ -10,6 +10,7 @@ export type Host = {
   /** null when the file is missing or unreadable */
   read: (path: string) => Promise<string | null>
   write: (path: string, text: string) => Promise<void>
+  exists: (path: string) => Promise<boolean>
   get: (key: string) => Promise<unknown>
   set: (key: string, value: unknown) => Promise<void>
   remove: (key: string) => Promise<void>

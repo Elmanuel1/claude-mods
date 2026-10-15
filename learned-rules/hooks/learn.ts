@@ -20,10 +20,13 @@ const NOT_TYPED = /system-reminder|task-notification|Base directory for this ski
 // The typed text steers the run, pasted text included, so the run only reads, and the mod applies the rules it
 // returns. It loads only project settings, from an empty folder it starts in, so none of the user's settings (which
 // may allow every command), hooks or plugins apply.
-const RUN_ARGS = [
-  '-p', '--setting-sources', 'project', '--strict-mcp-config', '--disable-slash-commands',
-  '--tools', 'Read,Grep,Glob', '--permission-mode', 'default', '--allowedTools', 'Read,Grep,Glob',
-]
+function runArgs(readable: string[]): string[] {
+  return [
+    '-p', '--setting-sources', 'project', '--strict-mcp-config', '--disable-slash-commands',
+    '--tools', 'Read,Grep,Glob', ...readable.flatMap(dir => ['--add-dir', dir]),
+    '--permission-mode', 'default', '--allowedTools', 'Read,Grep,Glob',
+  ]
+}
 
 // What a person typed: at the terminal, through Remote Control, or in an app that drives Claude Code through the SDK
 // (the desktop app). Notifications, triggers, other sessions' messages and slash commands are not corrections.
@@ -94,7 +97,10 @@ async function nextReady(io: Host, due: QueuedSession[]): Promise<Ready | undefi
 async function learnFrom(io: Host, skills: string, { item, worktree }: Ready): Promise<void> {
   const runDir = `${io.home}/.claude/learned/run`
   await io.write(`${runDir}/README.md`, 'The learning run starts here, in a folder with no settings.\n')
-  const { code, output } = await io.claude(RUN_ARGS, await buildPrompt(io, skills, item, worktree), runDir)
+  const project = worktree === 'ready' || worktree === 'unsynced' ? repoPath(io, 'project') : null
+  // The files it reads lie outside the folder it starts in, and a read there needs a person under -p otherwise.
+  const readable = [skills, io.pluginRoot, ...(project ? [project] : []), ...((await io.exists(item.cwd)) ? [item.cwd] : [])]
+  const { code, output } = await io.claude(runArgs(readable), await buildPrompt(io, skills, item, worktree), runDir)
   if (code === null) {
     return
   }
@@ -105,7 +111,6 @@ async function learnFrom(io: Host, skills: string, { item, worktree }: Ready): P
     await retryLater(io, item, summary)
     return
   }
-  const project = worktree === 'ready' || worktree === 'unsynced' ? repoPath(io, 'project') : null
   const applied = await applyRules(io, rules, { personal: skills, project })
   await io.write(summary, [output, ...applied.refused.map(refusal => `Not applied: ${refusal}`)].join('\n'))
   await finish(io, item)

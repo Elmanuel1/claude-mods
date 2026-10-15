@@ -31,6 +31,7 @@ async function host($: Engine): Promise<Host> {
     },
     read: path => $.fs.read(path).catch(() => null),
     write: (path, text) => $.fs.write(path, text),
+    exists: path => $.fs.exists(path).catch(() => false),
     get: key => $.store.get(key),
     set: (key, value) => $.store.set(key, value),
     remove: key => $.store.delete(key),

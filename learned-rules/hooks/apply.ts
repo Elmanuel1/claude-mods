@@ -18,14 +18,16 @@ export type Applied = { committed: number; refused: string[] }
 
 const RULES_BLOCK = /```rules\s*\n([\s\S]*?)\n```/g
 const POWER_KEY = /^["']?(hooks|allowed-tools)["']?\s*:/
+// A skill runs !`cmd` and ```! blocks when it loads.
+const SHELL_IN_SKILL = /(^|\s)!`[^`]+`|```!/g
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/
 
-// The run's last ```rules block; null when there is none or it is not the expected JSON.
-export function parseRules(output: string): LearnedRule[] | null {
+/** The entries of the run's last ```rules block; null when there is none or it is not JSON with a rules list. */
+export function parseRules(output: string): unknown[] | null {
   const block = [...output.matchAll(RULES_BLOCK)].pop()?.[1]
   try {
     const parsed = JSON.parse(block ?? '') as { rules?: unknown }
-    return Array.isArray(parsed.rules) ? parsed.rules.filter(isLearnedRule) : null
+    return Array.isArray(parsed.rules) ? parsed.rules : null
   } catch {
     return null
   }
@@ -34,15 +36,15 @@ export function parseRules(output: string): LearnedRule[] | null {
 // The mod, not the run, writes and commits each rule, one commit per rule: the file must be a Markdown rule (or the
 // skill-trigger list) inside its repo, each edit must match exactly once, and no edit may add or change a skill's
 // hooks or allowed-tools, which would run commands or widen what the skill may do.
-export async function applyRules(io: Host, rules: LearnedRule[], roots: RuleRoots): Promise<Applied> {
+export async function applyRules(io: Host, entries: unknown[], roots: RuleRoots): Promise<Applied> {
   const refused: string[] = []
-  for (const rule of rules) {
-    const problem = await applyRule(io, rule, roots)
+  for (const [index, entry] of entries.entries()) {
+    const problem = isLearnedRule(entry) ? await applyRule(io, entry, roots) : 'not in the expected shape'
     if (problem) {
-      refused.push(`${rule.subject}: ${problem}`)
+      refused.push(`${isLearnedRule(entry) ? entry.subject : `entry ${index + 1}`}: ${problem}`)
     }
   }
-  return { committed: rules.length - refused.length, refused }
+  return { committed: entries.length - refused.length, refused }
 }
 
 async function applyRule(io: Host, rule: LearnedRule, roots: RuleRoots): Promise<string | null> {
@@ -54,7 +56,8 @@ async function applyRule(io: Host, rule: LearnedRule, roots: RuleRoots): Promise
     return `not a rule file or rule subject: ${rule.file}`
   }
   const path = `${root}/${rule.file}`
-  const before = (await io.read(path)) ?? ''
+  const existing = await io.read(path)
+  const before = existing ?? ''
   const after = rule.edits.reduce<string | null>((text, edit) => (text === null ? null : applyEdit(text, edit)), before)
   if (after === null) {
     return 'an edit does not match the file exactly once'
@@ -62,14 +65,31 @@ async function applyRule(io: Host, rule: LearnedRule, roots: RuleRoots): Promise
   if (powers(after) !== powers(before)) {
     return 'it adds or changes hooks or allowed-tools'
   }
+  if (shellCount(after) > shellCount(before)) {
+    return 'it adds a shell command a skill runs when it loads'
+  }
   await io.write(path, after)
   await io.run(['git', '-C', root, 'add', '--', rule.file])
   const committed = await io.run(['git', '-C', root, 'commit', '-q', '-m', rule.subject, '-m', bodyOf(rule), '--', rule.file])
   if (committed.exitCode === 0) {
     return null
   }
-  await io.write(path, before)
+  await undoWrite(io, root, rule.file, existing)
   return `commit failed: ${committed.stderr.trim().split('\n').pop()}`
+}
+
+// The file and the index go back to how they were, so neither repo is left dirty by a rule that did not land.
+async function undoWrite(io: Host, root: string, file: string, existing: string | null): Promise<void> {
+  await io.run(['git', '-C', root, 'reset', '-q', '--', file])
+  if (existing !== null) {
+    await io.write(`${root}/${file}`, existing)
+    return
+  }
+  await io.run(['git', '-C', root, 'clean', '-q', '-f', '--', file])
+}
+
+function shellCount(text: string): number {
+  return [...text.matchAll(SHELL_IN_SKILL)].length
 }
 
 function bodyOf(rule: LearnedRule): string {

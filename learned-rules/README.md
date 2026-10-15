@@ -49,8 +49,11 @@ OS notification tool.
    before the run. It applies a rule only when:
    - the file is a Markdown file (or `skill-triggers.json`) inside that repo, outside `.git`;
    - each edit matches the file exactly once;
-   - the edit adds or changes no `hooks:` or `allowed-tools:` in a skill's frontmatter, since personal rules are live
-     once committed.
+   - the edit adds or changes no `hooks:` or `allowed-tools:` in a skill's frontmatter, and adds no `` !`command` `` or
+     ` ```! ` block a skill runs when it loads, since personal rules are live once committed;
+   - the entry has the expected shape.
+
+   A rule whose commit fails leaves its file and the index as they were.
 
    Nothing is pushed. The run's summary, and why any rule was not applied, is saved in
    `~/.claude/learned/<session id>.md`. A run that fails (an expired login, a usage limit, an answer with no rules)
