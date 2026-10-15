@@ -25,7 +25,6 @@ export type Host = {
   pluginRoot: string
 }
 
-// Reads a spawned child's output to its end, and how it ended.
 export async function drain(child: AsyncGenerator<{ text: string }, { code: number | null }>): Promise<{ code: number | null; output: string }> {
   let output = ''
   let step = await child.next()

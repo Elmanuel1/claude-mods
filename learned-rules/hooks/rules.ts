@@ -39,7 +39,6 @@ export async function scan(io: Host): Promise<Pending> {
   return { rules, unpushed }
 }
 
-// Every "rule:" commit the learning run made in one repo, oldest first.
 async function ruleCommits(io: Host, repo: RuleRepo): Promise<Rule[]> {
   const path = repoPath(io, repo)
   const range = repo === 'project' ? [`origin/main..${BRANCH}`] : []

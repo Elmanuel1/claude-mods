@@ -42,8 +42,10 @@ OS notification tool.
    - your Claude Code hooks and permission rules, user-wide and in the repo.
 4. **Writing rules.** The run lists your corrections, skips the ones a rule already covers, and commits each new rule:
    personal ones in `~/.claude/skills` (made a git repo on first use), repo ones on the branch `docs/learned-rules` in
-   a worktree at `~/.claude/learned/repo-worktree`. It never pushes. The run's summary is saved in
-   `~/.claude/learned/<session id>.md`.
+   a worktree at `~/.claude/learned/repo-worktree`. It may write only those two places, never pushes, and git commands
+   that can run other programs (`config`, `-c`, submodules, `--exec`) are refused, so pasted text cannot steer it
+   elsewhere. The run's summary is saved in `~/.claude/learned/<session id>.md`. A run that fails (an expired login, a
+   usage limit) keeps the session queued and tries again 30 minutes later, three times at most.
 5. **Enforcement.** For each rule the run reads the enforcers that could see it and writes its Enforce line:
 
    | Status | Meaning |
@@ -73,4 +75,5 @@ OS notification tool.
 ## Limits
 
 - A learning run stops if the session running it closes; its session stays queued and the next session runs it again.
-- The repo worktree serves one repository at a time, and the rules PR targets `main`.
+- The repo worktree serves one repository at a time: a session from another repository waits until the rules already
+  there are pushed. The rules PR targets `main`.

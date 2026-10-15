@@ -9,7 +9,6 @@ function failureOf(run: RunResult): string {
   return lastLine(run.stderr) || lastLine(run.stdout) || `exit code ${run.exitCode}`
 }
 
-// Pushes the accepted project rules, then opens the PR to main or reports the open one.
 export async function push(io: Host): Promise<void> {
   const worktree = repoPath(io, 'project')
   const pushed = await io.run(['git', '-C', worktree, 'push', '--force-with-lease', '-u', 'origin', BRANCH], { timeoutMs: 120000 })

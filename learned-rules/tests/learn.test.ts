@@ -13,7 +13,9 @@ const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer'
 type Spawned = { argv: string[]; input?: string; env?: Record<string, string> }
 
 // A repo with one custom PMD ruleset on a GitHub plan without rulesets; the learning run makes one rule commit.
-function world(on: On, env: Record<string, string> = {}): { spawned: Spawned[]; notified: string[]; settle: () => Promise<void> } {
+type Options = { env?: Record<string, string>; exitCode?: number; leaseTakenAt?: number }
+
+function world(on: On, { env = {}, exitCode = 0, leaseTakenAt }: Options = {}): { spawned: Spawned[]; notified: string[]; settle: (ms?: number) => Promise<void> } {
   const clock = mock.clock(on)
   mock.store(on, { reviewed: {} })
   mock.env(on, { HOME: '/home/tester', ...env })
@@ -34,11 +36,20 @@ function world(on: On, env: Record<string, string> = {}): { spawned: Spawned[]; 
   on('fs.write', () => ({ value: undefined }))
   on('process.spawn', async function* ($, e) {
     spawned.push({ argv: [...e.argv], input: e.input, env: e.env })
-    yield { stream: 'stdout' as const, text: 'Added one rule.\nSUGGESTED: 1\n' }
-    return { value: { code: 0, signal: null } }
+    yield { stream: 'stdout' as const, text: exitCode === 0 ? 'Added one rule.\nSUGGESTED: 1\n' : 'Not logged in.\n' }
+    return { value: { code: exitCode, signal: null } }
   })
   on('process.run', ($, e) => {
     const argv = [...e.argv]
+    if (argv.includes('commit-tree')) {
+      return ran('1ea5e\n')
+    }
+    if (argv.includes('refs/learned/lease') && argv.includes('log')) {
+      return leaseTakenAt === undefined ? ran('', 128) : ran(`0ther ${leaseTakenAt}\n`)
+    }
+    if (argv.includes('--git-common-dir')) {
+      return ran('/work/repo/.git\n')
+    }
     if (argv.includes('--show-toplevel')) {
       return ran('/work/repo\n')
     }
@@ -55,7 +66,7 @@ function world(on: On, env: Record<string, string> = {}): { spawned: Spawned[]; 
   })
 
   // turn.complete starts the learning run without waiting for it; advancing the clock lets it finish.
-  return { spawned, notified, settle: () => clock.advance(1) }
+  return { spawned, notified, settle: (ms = 1) => clock.advance(ms) }
 }
 
 const scanned = ($: Engine) => $.turn.complete({ answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' })
@@ -110,11 +121,45 @@ test('a session with almost nothing typed is not queued', async ($, on) => {
 })
 
 test("the learning run's own session records and queues nothing", async ($, on) => {
-  const { spawned, settle } = world(on, { LEARN_FROM_CORRECTIONS: '1' })
+  const { spawned, settle } = world(on, { env: { LEARN_FROM_CORRECTIONS: '1' } })
   for (let i = 0; i < 6; i++) {
     await $.prompt.submit(typed(CORRECTION))
   }
   await $.classic.SessionEnd({ reason: 'prompt_input_exit', session_id: 'open-session', cwd: '/work/repo' })
+
+  await scanned($)
+  await settle()
+
+  expect(spawned).toHaveLength(0)
+})
+
+async function endTypedSession($: Engine): Promise<void> {
+  for (let i = 0; i < 6; i++) {
+    await $.prompt.submit(typed(CORRECTION))
+  }
+  await $.classic.SessionEnd({ reason: 'prompt_input_exit', session_id: 'open-session', cwd: '/work/repo' })
+}
+
+test('a failed run keeps the corrections and tries again 30 minutes later', async ($, on) => {
+  const { spawned, notified, settle } = world(on, { exitCode: 1 })
+  await endTypedSession($)
+
+  await scanned($)
+  await settle()
+  await scanned($)
+  await settle()
+
+  expect(spawned).toHaveLength(1)
+  expect(notified[0]).toMatch(/^The learning run failed; it tries again in 30 minutes/)
+  await settle(30 * 60 * 1000)
+  await scanned($)
+  await settle()
+  expect(spawned).toHaveLength(2)
+})
+
+test('a lease another session took in the last hour keeps this session from running', async ($, on) => {
+  const { spawned, settle } = world(on, { leaseTakenAt: 0 })
+  await endTypedSession($)
 
   await scanned($)
   await settle()
