@@ -40,19 +40,21 @@ OS notification tool.
    - the enforcer files on the repo's default branch (linter, architecture-test, ratchet, policy and workflow configs);
    - what GitHub requires before a merge (rulesets, branch protection), or why it cannot be read;
    - your Claude Code hooks and permission rules, user-wide and in the repo.
-4. **Writing rules.** The run lists your corrections, skips the ones a rule already covers, and commits each new rule:
-   personal ones in `~/.claude/skills` (made a git repo on first use), repo ones on the branch `docs/learned-rules` in
-   a worktree at `~/.claude/learned/repo-worktree` that the mod brings up to date with main before the run. The run
-   is kept to that job, since text pasted into a session reaches it:
-   - it loads only project settings, from an empty folder it starts in, so none of your settings (which may allow
-     every command), hooks, plugins, MCP servers or skills apply;
-   - it may write only Markdown files (and `skill-triggers.json`) under those two places, never inside `.git`;
-   - its only commands are `git add` and `git commit` on those two repositories, with git hooks turned off;
-   - personal rules are live once written, so a skill file whose `hooks:` or `allowed-tools:` frontmatter the run
-     added or changed, committed or not, goes back to how it was before the run, and its rules are marked rejected.
+4. **Writing rules.** The run lists your corrections, skips the ones a rule already covers, and answers with each new
+   rule as a set of edits. The run only reads, since text pasted into a session reaches it: its tools are Read, Grep
+   and Glob, and it loads only project settings, from an empty folder it starts in, so none of your settings (which
+   may allow every command), hooks, plugins, MCP servers or skills apply. The mod then applies each rule as one git
+   commit: personal ones in `~/.claude/skills` (made a git repo on first use), repo ones on the branch
+   `docs/learned-rules` in a worktree at `~/.claude/learned/repo-worktree`, which the mod brings up to date with main
+   before the run. It applies a rule only when:
+   - the file is a Markdown file (or `skill-triggers.json`) inside that repo, outside `.git`;
+   - each edit matches the file exactly once;
+   - the edit adds or changes no `hooks:` or `allowed-tools:` in a skill's frontmatter, since personal rules are live
+     once committed.
 
-   It never pushes. The run's summary is saved in `~/.claude/learned/<session id>.md`. A run that fails (an expired
-   login, a usage limit) keeps the session queued and tries again 30 minutes later, three times at most.
+   Nothing is pushed. The run's summary, and why any rule was not applied, is saved in
+   `~/.claude/learned/<session id>.md`. A run that fails (an expired login, a usage limit, an answer with no rules)
+   keeps the session queued and tries again 30 minutes later, three times at most.
 5. **Enforcement.** For each rule the run reads the enforcers that could see it and writes its Enforce line:
 
    | Status | Meaning |

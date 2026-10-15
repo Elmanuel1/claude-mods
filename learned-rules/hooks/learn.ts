@@ -1,8 +1,8 @@
+import { applyRules, parseRules } from './apply'
 import { enforcerInventory } from './inventory'
 import type { Host } from './host'
 import { releaseLease, takeLease } from './lease'
 import { repoPath } from './rules'
-import { runArgs, runEnv, snapshot, undoSkillPowers } from './sandbox'
 import { prepareWorktree } from './worktree'
 import type { WorktreeState } from './worktree'
 
@@ -16,6 +16,14 @@ const MAX_ATTEMPTS = 3
 const RETRY_AFTER_MS = 30 * 60 * 1000
 // Not what the user typed: reminders, notifications, skill bodies, markup and interrupts.
 const NOT_TYPED = /system-reminder|task-notification|Base directory for this skill|^\s*<|^\[Request interrupted/
+
+// The typed text steers the run, pasted text included, so the run only reads, and the mod applies the rules it
+// returns. It loads only project settings, from an empty folder it starts in, so none of the user's settings (which
+// may allow every command), hooks or plugins apply.
+const RUN_ARGS = [
+  '-p', '--setting-sources', 'project', '--strict-mcp-config', '--disable-slash-commands',
+  '--tools', 'Read,Grep,Glob', '--permission-mode', 'default', '--allowedTools', 'Read,Grep,Glob',
+]
 
 // What a person typed: at the terminal, through Remote Control, or in an app that drives Claude Code through the SDK
 // (the desktop app). Notifications, triggers, other sessions' messages and slash commands are not corrections.
@@ -84,28 +92,28 @@ async function nextReady(io: Host, due: QueuedSession[]): Promise<Ready | undefi
 }
 
 async function learnFrom(io: Host, skills: string, { item, worktree }: Ready): Promise<void> {
-  const before = await snapshot(io, skills)
-  const repos = worktree === 'ready' || worktree === 'unsynced' ? [skills, repoPath(io, 'project')] : [skills]
   const runDir = `${io.home}/.claude/learned/run`
   await io.write(`${runDir}/README.md`, 'The learning run starts here, in a folder with no settings.\n')
-  const { code, output } = await io.claude(runArgs(repos), await buildPrompt(io, skills, item, worktree), runDir, runEnv(io))
-  const undone = await undoSkillPowers(io, skills, before)
-  if (undone > 0) {
-    io.notify(`Undid hooks or allowed-tools the learning run added to ${undone} skill file(s); those rules are rejected.`)
-  }
+  const { code, output } = await io.claude(RUN_ARGS, await buildPrompt(io, skills, item, worktree), runDir)
   if (code === null) {
     return
   }
   const summary = `${io.home}/.claude/learned/${item.sessionId}.md`
-  await io.write(summary, output)
-  const suggested = Number(output.match(/^SUGGESTED: (\d+)\s*$/m)?.[1] ?? NaN)
-  if (code !== 0 || Number.isNaN(suggested)) {
+  const rules = parseRules(output)
+  if (code !== 0 || rules === null) {
+    await io.write(summary, output)
     await retryLater(io, item, summary)
     return
   }
+  const project = worktree === 'ready' || worktree === 'unsynced' ? repoPath(io, 'project') : null
+  const applied = await applyRules(io, rules, { personal: skills, project })
+  await io.write(summary, [output, ...applied.refused.map(refusal => `Not applied: ${refusal}`)].join('\n'))
   await finish(io, item)
-  if (suggested > 0) {
-    io.notify(`${suggested} rule(s) suggested. Accept or reject each with /learned.`)
+  if (applied.refused.length > 0) {
+    io.notify(`${applied.refused.length} learned rule(s) were not applied. See ${summary}`)
+  }
+  if (applied.committed > 0) {
+    io.notify(`${applied.committed} rule(s) suggested. Accept or reject each with /learned.`)
   }
 }
 
@@ -143,7 +151,6 @@ async function buildPrompt(io: Host, skills: string, item: QueuedSession, worktr
     .replaceAll('{{CWD}}', item.cwd)
     .replaceAll('{{PLUGIN_ROOT}}', io.pluginRoot)
     .replaceAll('{{SKILLS}}', skills)
-    .replaceAll('{{WORKTREE_PATH}}', repoPath(io, 'project'))
     .replaceAll('{{WORKTREE}}', WORKTREE_NOTES[worktree] ? `${repoPath(io, 'project')}, ${WORKTREE_NOTES[worktree]}` : NO_WORKTREE)
   const typed = ((await io.get(typedKey(item.sessionId))) as string | undefined) ?? ''
   const inventory = await enforcerInventory(io, item.cwd)

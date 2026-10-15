@@ -1,6 +1,6 @@
 export type RunResult = { exitCode: number; stdout: string; stderr: string }
 
-export type RunInit = { cwd?: string; timeoutMs?: number; env?: Record<string, string> }
+export type RunInit = { cwd?: string; timeoutMs?: number }
 
 // The engine follows `$` only within the hooks module's own file, so register.tsx builds this from `$` and the
 // other files take it instead.
@@ -15,7 +15,7 @@ export type Host = {
   remove: (key: string) => Promise<void>
   userSettings: () => Promise<unknown>
   /** Runs `claude` headless with the prompt on stdin; `code` is null when the child was killed. */
-  claude: (args: string[], prompt: string, cwd: string, env: Record<string, string>) => Promise<{ code: number | null; output: string }>
+  claude: (args: string[], prompt: string, cwd: string) => Promise<{ code: number | null; output: string }>
   toast: (text: string) => void
   /** A toast, and the person's own notification channel */
   notify: (text: string) => void

@@ -77,7 +77,7 @@ async function repoEnforcers(io: Host, root: string): Promise<string[]> {
   const tree = await io.run(['git', '-C', root, 'ls-tree', '-r', '--name-only', ref])
   const files = tree.stdout.split('\n').filter(path => ENFORCER_FILES.test(path) && !NOT_ENFORCERS.test(path))
   const lines = [
-    `Enforcer files on ${ref} in ${root} (read one the checkout lacks with git -C ${root} show ${ref}:<path>):`,
+    `Enforcer files on ${ref} in ${root} (the repo worktree, when there is one, holds this same tree):`,
     ...files.slice(0, MAX_FILES).map(path => `- ${path}`),
   ]
   const remote = await io.run(['git', '-C', root, 'remote', 'get-url', 'origin'])

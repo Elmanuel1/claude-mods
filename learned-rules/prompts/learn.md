@@ -11,8 +11,8 @@ directory: {{CWD}}). Turn their corrections into durable rules, and nothing else
    skill ("use /<skill>", "load the <skill> skill", "you have a skill for this") after a message where Claude did not
    load it. For each, add a case-insensitive Python regex built from the words of that earlier message to the skill's
    list in that file (general enough to match the next request like it, narrow enough not to fire on unrelated ones;
-   skip it if an existing pattern already matches that message). One commit per skill:
-   "rule: trigger <skill> on <short phrase>", body "Correction: <the user's words>", "File: skill-triggers.json".
+   skip it if an existing pattern already matches that message). One rule per skill, with the subject
+   "rule: trigger <skill> on <short phrase>".
 3. Write each new rule the way the file already writes rules: a short heading, one or two sentences of why, and a
    BAD/GOOD example taken from the session. No history ("we used to...").
 4. For each new rule, decide whether a static check could catch its BAD example, so the rule holds without anyone
@@ -30,18 +30,25 @@ directory: {{CWD}}). Turn their corrections into durable rules, and nothing else
    no required check. Only when none of them can see it, pick a new tool from {{PLUGIN_ROOT}}/references/enforcers.md,
    for the language of the files the rule is about. Where {{PLUGIN_ROOT}}/references/<language>.md exists (java.md,
    for one), read it for how a check of that kind is written and ratcheted.
-   Only recommend the check: never edit a lint config, a check or a hook.
-5. ONE COMMIT PER RULE, so the user can accept or reject each rule on its own. Commit message: first line
-   "rule: <short title>", then a blank line, then "Correction: <the user's words, quoted>", "File: <path>" and
-   "Enforce: <status>; <enforcer file, or new: tool>; <what it checks, one line>" (for none:
-   "Enforce: none; -; <why no tool can see it>"). Commits that only add a skill trigger have no Enforce line.
-   Never push, never open a PR.
-6. Personal rules: edit files under {{SKILLS}} and commit each rule with exactly
-   `git -C {{SKILLS}} add <file>` and `git -C {{SKILLS}} commit -m <subject> -m <body>`.
-7. Repo rules: never edit the working directory. The repo worktree is {{WORKTREE}}. Edit the repo files there and
-   commit each rule with exactly `git -C {{WORKTREE_PATH}} add <file>` and
-   `git -C {{WORKTREE_PATH}} commit -m <subject> -m <body>`. Those and the two in step 6 are the only commands you can
-   run, and only Markdown files (and skill-triggers.json) can be written.
-8. Print a short summary: each correction, the file and section it went to and its Enforce status, or why it was
+   Only recommend the check: never propose an edit to a lint config, a check or a hook.
+5. You can only read: the mod applies your rules, one commit per rule, so the user can accept or reject each on its
+   own. Personal rules are files in {{SKILLS}}. Repo rules are files in the repo worktree, {{WORKTREE}}; never the
+   working directory. Only Markdown files (and skill-triggers.json in {{SKILLS}}) can be changed, and a change that
+   adds or alters a skill's hooks or allowed-tools frontmatter is refused.
+6. Print a short summary: each correction, the file and section it went to and its Enforce status, or why it was
    skipped.
-9. The last line of your output must be exactly "SUGGESTED: <n>", n being the number of rule commits you made.
+7. End your output with one block, `{"rules": []}` when there is nothing to add:
+
+   ```rules
+   {"rules": [{
+     "repo": "personal or project",
+     "file": "<path inside that repo, such as code-design/SKILL.md or CLAUDE.md>",
+     "edits": [{"old": "<text that appears exactly once in the file>", "new": "<what replaces it>"}],
+     "subject": "rule: <short title>",
+     "correction": "<the user's words, quoted>",
+     "enforce": "<status>; <enforcer file, or new: tool>; <what it checks, one line>"
+   }]}
+   ```
+
+   An empty "old" appends "new" at the end of the file, creating it if needed. For status none, enforce is
+   "none; -; <why no tool can see it>"; for a skill-trigger entry it is "".
