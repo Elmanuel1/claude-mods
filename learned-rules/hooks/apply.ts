@@ -72,6 +72,10 @@ async function applyRule(io: Host, rule: LearnedRule, roots: RuleRoots, ruleId: 
   if ((await io.run(['git', '-C', root, 'diff', '--cached', '--quiet', '--', rule.file])).exitCode !== 0) {
     return 'the file has staged changes'
   }
+  // An existing file git does not track is the user's own work; committing it would put that work in the rule.
+  if (existing !== null && (await io.run(['git', '-C', root, 'ls-files', '--error-unmatch', '--', rule.file])).exitCode !== 0) {
+    return 'the file is not tracked by git'
+  }
   await io.write(path, after)
   await io.run(['git', '-C', root, 'add', '--', rule.file])
   const committed = await io.run(['git', '-C', root, 'commit', '-q', '-m', rule.subject, '-m', bodyOf(rule, ruleId), '--', rule.file])

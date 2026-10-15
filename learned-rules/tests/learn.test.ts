@@ -25,12 +25,12 @@ const answer = (rules: unknown[]) => `Summary.\n\`\`\`rules\n${JSON.stringify({ 
 
 type Spawned = { argv: string[]; input?: string; cwd?: string }
 
-type Options = { env?: Record<string, string>; exitCode?: number; leaseTakenAt?: number; output?: string; commitFails?: boolean; staged?: boolean; leaseLost?: boolean; staleWorktree?: boolean }
+type Options = { env?: Record<string, string>; exitCode?: number; leaseTakenAt?: number; output?: string; commitFails?: boolean; staged?: boolean; untracked?: boolean; leaseLost?: boolean; staleWorktree?: boolean }
 
 type World = { spawned: Spawned[]; notified: string[]; calls: string[][]; written: Map<string, string>; settle: (ms?: number) => Promise<void> }
 
 // A repo with one custom PMD ruleset on a GitHub plan without rulesets; the run answers with `output`.
-function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, output = answer([rule()]), commitFails = false, staged = false, leaseLost = false, staleWorktree = false }: Options = {}): World {
+function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, output = answer([rule()]), commitFails = false, staged = false, untracked = false, leaseLost = false, staleWorktree = false }: Options = {}): World {
   const clock = mock.clock(on)
   mock.store(on, { reviewed: {} })
   mock.env(on, { HOME: '/home/tester', ...env })
@@ -65,6 +65,9 @@ function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, output = answer([
     calls.push(argv)
     if (commitFails && argv.includes('commit') && argv.includes('-m')) {
       return ran('', 1)
+    }
+    if (argv.includes('--error-unmatch')) {
+      return ran('', untracked ? 1 : 0)
     }
     if (argv.includes('--cached')) {
       return ran('', staged ? 1 : 0)
@@ -272,4 +275,13 @@ test('a worktree folder whose repository is gone is reported, and repo rules wai
 
   expect(calls.some(argv => argv.includes('worktree') && argv.includes('add'))).toBe(false)
   expect(notified).toContain('Remove /home/tester/.claude/learned/repo-worktree: its repository is gone, so repo rules wait until it is deleted.')
+})
+
+test('a rule whose file exists but is not tracked by git is not applied', async ($, on) => {
+  const { calls, written, settle } = world(on, { untracked: true })
+  await learned($, settle)
+
+  expect(written.has('/home/tester/.claude/skills/lint/SKILL.md')).toBe(false)
+  expect(commits(calls)).toEqual([])
+  expect(written.get('/home/tester/.claude/learned/open-session.md')).toContain('Not applied: rule: time in UTC: the file is not tracked by git')
 })
