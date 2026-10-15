@@ -54,8 +54,8 @@ const MAX_FILES = 120
 type HookGroup = { matcher?: string; hooks?: { command?: string }[] }
 type SettingsHooks = { hooks?: Record<string, HookGroup[]>; permissions?: { deny?: unknown[] } }
 
-// What already enforces rules where the session ran: the repo's checks (read from the default branch, which rules
-// land on and a checkout can trail), what GitHub requires before a merge, and the Claude hooks.
+// What already enforces rules where the session ran: the repo's checks, what GitHub requires before a merge, and the
+// Claude hooks.
 export async function enforcerInventory(io: Host, cwd: string): Promise<string> {
   const lines: string[] = []
   const top = await io.run(['git', '-C', cwd, 'rev-parse', '--show-toplevel'])
@@ -72,10 +72,8 @@ export async function enforcerInventory(io: Host, cwd: string): Promise<string> 
 }
 
 async function repoEnforcers(io: Host, root: string): Promise<string[]> {
-  await io.run(['git', '-C', root, 'fetch', '-q', 'origin'])
-  const head = await io.run(['git', '-C', root, 'symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'])
-  const candidate = head.exitCode === 0 ? head.stdout.trim() : 'origin/main'
-  const ref = (await io.run(['git', '-C', root, 'rev-parse', '-q', '--verify', candidate])).exitCode === 0 ? candidate : 'HEAD'
+  // Rules land on main (prepareWorktree has just fetched it), which a session's checkout can trail.
+  const ref = (await io.run(['git', '-C', root, 'rev-parse', '-q', '--verify', 'origin/main'])).exitCode === 0 ? 'origin/main' : 'HEAD'
   const tree = await io.run(['git', '-C', root, 'ls-tree', '-r', '--name-only', ref])
   const files = tree.stdout.split('\n').filter(path => ENFORCER_FILES.test(path) && !NOT_ENFORCERS.test(path))
   const lines = [
@@ -85,7 +83,7 @@ async function repoEnforcers(io: Host, root: string): Promise<string[]> {
   const remote = await io.run(['git', '-C', root, 'remote', 'get-url', 'origin'])
   const slug = remote.stdout.trim().match(/github\.com[:/]([^/]+\/[^/]+?)(\.git)?$/)?.[1]
   if (slug) {
-    lines.push(...(await githubRules(io, slug, ref.replace(/^origin\//, ''))))
+    lines.push(...(await githubRules(io, slug, 'main')))
   }
   return lines
 }

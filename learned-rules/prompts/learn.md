@@ -38,10 +38,10 @@ directory: {{CWD}}). Turn their corrections into durable rules, and nothing else
    Never push, never open a PR.
 6. Personal rules: edit files under {{SKILLS}} and commit each rule with exactly
    `git -C {{SKILLS}} add <file>` and `git -C {{SKILLS}} commit -m <subject> -m <body>`.
-7. Repo rules: never edit the working directory. The repo worktree is {{WORKTREE}}, on the branch
-   docs/learned-rules, already up to date with the latest main. Edit the repo files there and commit each rule with
-   exactly `git -C {{WORKTREE}} add <file>` and `git -C {{WORKTREE}} commit -m <subject> -m <body>`. Those are the only git
-   commands you can run.
+7. Repo rules: never edit the working directory. The repo worktree is {{WORKTREE}}. Edit the repo files there and
+   commit each rule with exactly `git -C {{WORKTREE_PATH}} add <file>` and
+   `git -C {{WORKTREE_PATH}} commit -m <subject> -m <body>`. Those and the two in step 6 are the only commands you can
+   run, and only Markdown files (and skill-triggers.json) can be written.
 8. Print a short summary: each correction, the file and section it went to and its Enforce status, or why it was
    skipped.
 9. The last line of your output must be exactly "SUGGESTED: <n>", n being the number of rule commits you made.

@@ -35,8 +35,8 @@ async function host($: Engine): Promise<Host> {
     set: (key, value) => $.store.set(key, value),
     remove: key => $.store.delete(key),
     userSettings: () => $.settings.read({ source: 'user' }),
-    claude: (args, prompt, cwd) =>
-      drain($.process.spawn({ argv: ['claude', ...args], cwd, env: { LEARN_FROM_CORRECTIONS: '1' }, input: prompt })),
+    claude: (args, prompt, cwd, env) =>
+      drain($.process.spawn({ argv: ['claude', ...args], cwd, env: { ...env, LEARN_FROM_CORRECTIONS: '1' }, input: prompt })),
     toast: text => $.ui.toast(text),
     notify: text => {
       $.ui.toast(text)

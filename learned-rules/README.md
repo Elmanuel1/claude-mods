@@ -43,10 +43,15 @@ OS notification tool.
 4. **Writing rules.** The run lists your corrections, skips the ones a rule already covers, and commits each new rule:
    personal ones in `~/.claude/skills` (made a git repo on first use), repo ones on the branch `docs/learned-rules` in
    a worktree at `~/.claude/learned/repo-worktree` that the mod brings up to date with main before the run. The run
-   may write only those two places, outside any `.git` directory, and its only commands are `git add` and
-   `git commit` on those two repositories, so text pasted into a session cannot make it run anything else. It never
-   pushes. The run's summary is saved in `~/.claude/learned/<session id>.md`. A run that fails (an expired login, a
-   usage limit) keeps the session queued and tries again 30 minutes later, three times at most.
+   is kept to that job, since text pasted into a session reaches it:
+   - it loads none of your settings (which may allow every command), MCP servers or skills;
+   - it may write only Markdown files (and `skill-triggers.json`) under those two places, never inside `.git`;
+   - its only commands are `git add` and `git commit` on those two repositories, with git hooks turned off;
+   - a personal rule commit that adds `hooks:` or `allowed-tools:` to a skill's frontmatter is reverted and marked
+     rejected right after the run, since personal rules are live once committed.
+
+   It never pushes. The run's summary is saved in `~/.claude/learned/<session id>.md`. A run that fails (an expired
+   login, a usage limit) keeps the session queued and tries again 30 minutes later, three times at most.
 5. **Enforcement.** For each rule the run reads the enforcers that could see it and writes its Enforce line:
 
    | Status | Meaning |

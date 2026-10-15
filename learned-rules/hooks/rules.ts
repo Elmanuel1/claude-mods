@@ -18,7 +18,11 @@ async function reviewedKeys(io: Host): Promise<Record<string, 'accepted' | 'reje
 }
 
 export async function markReviewed(io: Host, rule: Rule, verdict: 'accepted' | 'rejected'): Promise<void> {
-  await io.set(REVIEWED_KEY, { ...(await reviewedKeys(io)), [rule.key]: verdict })
+  await markReviewedKey(io, rule.key, verdict)
+}
+
+export async function markReviewedKey(io: Host, key: string, verdict: 'accepted' | 'rejected'): Promise<void> {
+  await io.set(REVIEWED_KEY, { ...(await reviewedKeys(io)), [key]: verdict })
 }
 
 export async function scan(io: Host): Promise<Pending> {
@@ -37,7 +41,6 @@ export async function scan(io: Host): Promise<Pending> {
   return { rules, unpushed }
 }
 
-/** Rule commits on the branch that its rules PR has not brought into main yet. */
 export async function hasOpenRules(io: Host, worktree: string): Promise<boolean> {
   return (await aheadOfMain(io, worktree)) > 0 && !(await squashMerged(io, worktree))
 }

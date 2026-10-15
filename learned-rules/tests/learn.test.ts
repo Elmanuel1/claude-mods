@@ -13,14 +13,15 @@ const typed = (text: string) => ({ text, wait: false, origin: { kind: 'composer'
 type Spawned = { argv: string[]; input?: string; env?: Record<string, string> }
 
 // A repo with one custom PMD ruleset on a GitHub plan without rulesets; the learning run makes one rule commit.
-type Options = { env?: Record<string, string>; exitCode?: number; leaseTakenAt?: number }
+type Options = { env?: Record<string, string>; exitCode?: number; leaseTakenAt?: number; addsHooks?: boolean }
 
-function world(on: On, { env = {}, exitCode = 0, leaseTakenAt }: Options = {}): { spawned: Spawned[]; notified: string[]; settle: (ms?: number) => Promise<void> } {
+function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, addsHooks = false }: Options = {}): { spawned: Spawned[]; notified: string[]; calls: string[][]; settle: (ms?: number) => Promise<void> } {
   const clock = mock.clock(on)
   mock.store(on, { reviewed: {} })
   mock.env(on, { HOME: '/home/tester', ...env })
   on('session.id', () => ({ value: 'open-session' }))
   const spawned: Spawned[] = []
+  const calls: string[][] = []
   const notified: string[] = []
 
   on('prompt.submit', ($, e) => ({ text: e.text }))
@@ -41,6 +42,13 @@ function world(on: On, { env = {}, exitCode = 0, leaseTakenAt }: Options = {}): 
   })
   on('process.run', ($, e) => {
     const argv = [...e.argv]
+    calls.push(argv)
+    if (argv.includes('rev-list') && argv.some(arg => arg.endsWith('..HEAD'))) {
+      return ran(addsHooks ? 'r1ce\n' : '')
+    }
+    if (argv.includes('show') && argv.includes('r1ce')) {
+      return ran('rule: lint on save\n+hooks:\n+  PostToolUse: []\n')
+    }
     if (argv.includes('commit-tree')) {
       return ran('1ea5e\n')
     }
@@ -66,7 +74,7 @@ function world(on: On, { env = {}, exitCode = 0, leaseTakenAt }: Options = {}): 
   })
 
   // turn.complete starts the learning run without waiting for it; advancing the clock lets it finish.
-  return { spawned, notified, settle: (ms = 1) => clock.advance(ms) }
+  return { spawned, notified, calls, settle: (ms = 1) => clock.advance(ms) }
 }
 
 const scanned = ($: Engine) => $.turn.complete({ answer: '', durationMs: 0, isAborted: false, turnId: 't1', reason: 'answer' })
@@ -83,10 +91,12 @@ test('a session with corrections is queued when it ends and learned from by an o
 
   expect(spawned).toHaveLength(1)
   expect(spawned[0]?.argv.slice(0, 2)).toEqual(['claude', '-p'])
-  expect(spawned[0]?.env).toEqual({ LEARN_FROM_CORRECTIONS: '1' })
+  expect(spawned[0]?.env?.LEARN_FROM_CORRECTIONS).toBe('1')
   const allowed = spawned[0]?.argv[spawned[0].argv.indexOf('--allowedTools') + 1] ?? ''
   expect(allowed).toContain('Bash(git -C /home/tester/.claude/learned/repo-worktree commit *)')
-  expect(allowed).toContain('Edit(~/.claude/skills/**)')
+  expect(allowed).toContain('Edit(~/.claude/skills/**/*.md)')
+  expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands']))
+  expect(spawned[0]?.env).toMatchObject({ GIT_CONFIG_KEY_0: 'core.hooksPath' })
   expect(allowed).not.toContain('Bash(git -C *)')
   expect(spawned[0]?.input).toMatch(/^Learn from \/work\/repo\./)
   expect(spawned[0]?.input).toMatch(/- config\/pmd\/rules\.xml\n- \.github\/workflows\/build\.yml/)
@@ -169,4 +179,15 @@ test('a lease another session took in the last hour keeps this session from runn
   await settle()
 
   expect(spawned).toHaveLength(0)
+})
+
+test('a personal rule that adds hooks to a skill is reverted and marked rejected', async ($, on) => {
+  const { notified, calls, settle } = world(on, { addsHooks: true })
+  await endTypedSession($)
+
+  await scanned($)
+  await settle()
+
+  expect(calls).toContainEqual(['git', '-C', '/home/tester/.claude/skills', 'revert', '--no-edit', 'r1ce'])
+  expect(notified).toContain('Reverted 1 personal rule(s) that added hooks or allowed-tools to a skill.')
 })

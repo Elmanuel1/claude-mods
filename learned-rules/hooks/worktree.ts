@@ -1,8 +1,11 @@
 import type { Host } from './host'
 import { BRANCH, hasOpenRules, repoPath, resetToMain } from './rules'
 
-/** `none`: the session ran outside a git repository; `busy`: the worktree holds another repository's open rules. */
-export type WorktreeState = 'ready' | 'busy' | 'none'
+/**
+ * `unsynced`: it holds earlier rules that could not be rebased onto main; `busy`: it holds another repository's open
+ * rules; `none`: the session ran outside a git repository, or no worktree could be added.
+ */
+export type WorktreeState = 'ready' | 'unsynced' | 'busy' | 'none'
 
 // The mod sets the worktree up itself, so the learning run needs no git command but add and commit. One worktree
 // holds one repository's rules at a time: a session from another repository waits until those rules are merged.
@@ -20,29 +23,28 @@ export async function prepareWorktree(io: Host, cwd: string): Promise<WorktreeSt
     await io.run(['git', `--git-dir=${ours}`, 'worktree', 'remove', '--force', worktree])
   }
   await io.run(['git', `--git-dir=${theirs}`, 'fetch', '-q', 'origin'], { timeoutMs: 60000 })
-  if (ours !== theirs) {
-    await addWorktree(io, theirs, worktree)
+  if (ours !== theirs && !(await addWorktree(io, theirs, worktree))) {
+    return 'none'
   }
-  await syncWithMain(io, worktree)
-  return 'ready'
+  return (await syncWithMain(io, worktree)) ? 'ready' : 'unsynced'
 }
 
-async function addWorktree(io: Host, gitDir: string, worktree: string): Promise<void> {
+async function addWorktree(io: Host, gitDir: string, worktree: string): Promise<boolean> {
   const hasBranch = (await io.run(['git', `--git-dir=${gitDir}`, 'rev-parse', '-q', '--verify', `refs/heads/${BRANCH}`])).exitCode === 0
   const start = hasBranch ? [BRANCH] : ['-b', BRANCH, 'origin/main']
-  await io.run(['git', `--git-dir=${gitDir}`, 'worktree', 'add', '-q', worktree, ...start])
+  return (await io.run(['git', `--git-dir=${gitDir}`, 'worktree', 'add', '-q', worktree, ...start])).exitCode === 0
 }
 
 // New rules start from the latest main: open rules are rebased onto it, a branch with none is reset to it.
-async function syncWithMain(io: Host, worktree: string): Promise<void> {
+async function syncWithMain(io: Host, worktree: string): Promise<boolean> {
   if (!(await hasOpenRules(io, worktree))) {
-    await resetToMain(io, worktree)
-    return
+    return resetToMain(io, worktree)
   }
-  const rebased = await io.run(['git', '-C', worktree, 'rebase', '-q', 'origin/main'])
-  if (rebased.exitCode !== 0) {
-    await io.run(['git', '-C', worktree, 'rebase', '--abort'])
+  if ((await io.run(['git', '-C', worktree, 'rebase', '-q', 'origin/main'])).exitCode === 0) {
+    return true
   }
+  await io.run(['git', '-C', worktree, 'rebase', '--abort'])
+  return false
 }
 
 async function commonDir(io: Host, path: string): Promise<string> {

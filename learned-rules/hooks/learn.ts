@@ -2,6 +2,7 @@ import { enforcerInventory } from './inventory'
 import type { Host } from './host'
 import { releaseLease, takeLease } from './lease'
 import { repoPath } from './rules'
+import { revertSkillPowers, runArgs, runEnv } from './sandbox'
 import { prepareWorktree } from './worktree'
 import type { WorktreeState } from './worktree'
 
@@ -15,17 +16,6 @@ const MAX_ATTEMPTS = 3
 const RETRY_AFTER_MS = 30 * 60 * 1000
 // Not what the user typed: reminders, notifications, skill bodies, markup and interrupts.
 const NOT_TYPED = /system-reminder|task-notification|Base directory for this skill|^\s*<|^\[Request interrupted/
-
-// The typed text steers the run, so it writes only rule files and runs only git add and commit on the two repos the
-// mod prepared. Nothing under .git is writable, so it cannot plant a config, hook or repo that runs a command.
-function toolRules(skills: string, worktree: string): string[] {
-  const commits = [skills, worktree].flatMap(repo => [`Bash(git -C ${repo} add *)`, `Bash(git -C ${repo} commit *)`])
-  // A path rule's leading / is read relative to the settings file, so the editable paths are written from ~.
-  const editable = ['~/.claude/skills/**', '~/.claude/learned/repo-worktree/**'].flatMap(path => [`Edit(${path})`, `Write(${path})`])
-  const allowed = ['Read', 'Grep', 'Glob', ...editable, ...commits]
-  const denied = ['Edit(**/.git/**)', 'Write(**/.git/**)', 'Edit(**/.git)', 'Write(**/.git)', 'Bash(git * -c *)', 'Bash(git * push*)']
-  return ['--allowedTools', allowed.join(','), '--disallowedTools', denied.join(',')]
-}
 
 // What a person typed: at the terminal, through Remote Control, or in an app that drives Claude Code through the SDK
 // (the desktop app). Notifications, triggers, other sessions' messages and slash commands are not corrections.
@@ -59,7 +49,9 @@ export async function enqueueEnded(io: Host, sessionId: string, cwd: string): Pr
 }
 
 export async function learnNext(io: Host): Promise<void> {
-  if (isRunning || (await queued(io)).length === 0) {
+  const now = await io.now()
+  const due = (await queued(io)).filter(item => (item.retryAt ?? 0) <= now)
+  if (isRunning || due.length === 0) {
     return
   }
   const skills = await ensureSkillsRepo(io)
@@ -69,7 +61,7 @@ export async function learnNext(io: Host): Promise<void> {
   }
   isRunning = true
   try {
-    const ready = await nextReady(io)
+    const ready = await nextReady(io, due)
     if (ready) {
       await learnFrom(io, skills, ready)
     }
@@ -79,9 +71,8 @@ export async function learnNext(io: Host): Promise<void> {
   }
 }
 
-async function nextReady(io: Host): Promise<Ready | undefined> {
-  const now = await io.now()
-  for (const item of (await queued(io)).filter(queuedItem => (queuedItem.retryAt ?? 0) <= now)) {
+async function nextReady(io: Host, due: QueuedSession[]): Promise<Ready | undefined> {
+  for (const item of due) {
     const worktree = await prepareWorktree(io, item.cwd)
     if (worktree !== 'busy') {
       return { item, worktree }
@@ -91,11 +82,12 @@ async function nextReady(io: Host): Promise<Ready | undefined> {
 }
 
 async function learnFrom(io: Host, skills: string, { item, worktree }: Ready): Promise<void> {
-  const { code, output } = await io.claude(
-    ['-p', '--permission-mode', 'default', ...toolRules(skills, repoPath(io, 'project'))],
-    await buildPrompt(io, skills, item, worktree),
-    item.cwd,
-  )
+  const before = (await io.run(['git', '-C', skills, 'rev-parse', 'HEAD'])).stdout.trim()
+  const { code, output } = await io.claude(runArgs(skills, repoPath(io, 'project')), await buildPrompt(io, skills, item, worktree), item.cwd, runEnv(io))
+  const reverted = await revertSkillPowers(io, skills, before)
+  if (reverted > 0) {
+    io.notify(`Reverted ${reverted} personal rule(s) that added hooks or allowed-tools to a skill.`)
+  }
   if (code === null) {
     return
   }
@@ -129,7 +121,13 @@ async function finish(io: Host, item: QueuedSession): Promise<void> {
   await io.remove(typedKey(item.sessionId))
 }
 
-const NO_WORKTREE = 'none (the session ran outside a git repository: skip repo rules)'
+const WORKTREE_NOTES: Record<WorktreeState, string> = {
+  ready: 'on the branch docs/learned-rules, up to date with the latest main',
+  unsynced: 'on the branch docs/learned-rules; its earlier rules could not be rebased onto main, so add to it as it is',
+  busy: '',
+  none: '',
+}
+const NO_WORKTREE = 'none: no repository worktree could be prepared for this session, so skip repo rules'
 
 async function buildPrompt(io: Host, skills: string, item: QueuedSession, worktree: WorktreeState): Promise<string> {
   const template = (await io.read(`${io.pluginRoot}/prompts/learn.md`)) ?? ''
@@ -137,7 +135,8 @@ async function buildPrompt(io: Host, skills: string, item: QueuedSession, worktr
     .replaceAll('{{CWD}}', item.cwd)
     .replaceAll('{{PLUGIN_ROOT}}', io.pluginRoot)
     .replaceAll('{{SKILLS}}', skills)
-    .replaceAll('{{WORKTREE}}', worktree === 'ready' ? repoPath(io, 'project') : NO_WORKTREE)
+    .replaceAll('{{WORKTREE_PATH}}', repoPath(io, 'project'))
+    .replaceAll('{{WORKTREE}}', WORKTREE_NOTES[worktree] ? `${repoPath(io, 'project')}, ${WORKTREE_NOTES[worktree]}` : NO_WORKTREE)
   const typed = ((await io.get(typedKey(item.sessionId))) as string | undefined) ?? ''
   const inventory = await enforcerInventory(io, item.cwd)
   return [instructions, 'The enforcers that exist:', '-----', inventory, '-----', "The user's messages:", '-----', typed, '-----'].join('\n')
