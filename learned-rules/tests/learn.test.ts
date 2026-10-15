@@ -25,12 +25,12 @@ const answer = (rules: unknown[]) => `Summary.\n\`\`\`rules\n${JSON.stringify({ 
 
 type Spawned = { argv: string[]; input?: string; cwd?: string }
 
-type Options = { env?: Record<string, string>; exitCode?: number; leaseTakenAt?: number; output?: string; commitFails?: boolean }
+type Options = { env?: Record<string, string>; exitCode?: number; leaseTakenAt?: number; output?: string; commitFails?: boolean; staged?: boolean; leaseLost?: boolean; staleWorktree?: boolean }
 
 type World = { spawned: Spawned[]; notified: string[]; calls: string[][]; written: Map<string, string>; settle: (ms?: number) => Promise<void> }
 
 // A repo with one custom PMD ruleset on a GitHub plan without rulesets; the run answers with `output`.
-function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, output = answer([rule()]), commitFails = false }: Options = {}): World {
+function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, output = answer([rule()]), commitFails = false, staged = false, leaseLost = false, staleWorktree = false }: Options = {}): World {
   const clock = mock.clock(on)
   mock.store(on, { reviewed: {} })
   mock.env(on, { HOME: '/home/tester', ...env })
@@ -65,6 +65,15 @@ function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, output = answer([
     calls.push(argv)
     if (commitFails && argv.includes('commit') && argv.includes('-m')) {
       return ran('', 1)
+    }
+    if (argv.includes('--cached')) {
+      return ran('', staged ? 1 : 0)
+    }
+    if (argv.includes('refs/learned/lease') && argv.includes('rev-parse')) {
+      return ran(leaseLost ? 'f0e1gn\n' : '1ea5e\n')
+    }
+    if (staleWorktree && argv.includes('--git-common-dir') && argv.includes('/home/tester/.claude/learned/repo-worktree')) {
+      return ran('', 128)
     }
     if (argv.includes('commit-tree')) {
       return ran('1ea5e\n')
@@ -144,7 +153,7 @@ test('the mod applies each returned rule and commits it with its Correction, Fil
   expect(written.get('/home/tester/.claude/skills/lint/SKILL.md')).toBe(SKILL.replace('Body.\n', 'Body.\n\n## Time in UTC\nTake the time as now(ZoneOffset.UTC).\n'))
   expect(commits(calls)).toEqual([[
     'git', '-C', '/home/tester/.claude/skills', 'commit', '-q', '-m', 'rule: time in UTC', '-m',
-    'Correction: "always take it as OffsetDateTime.now(ZoneOffset.UTC)"\nFile: lint/SKILL.md\nEnforce: new; config/pmd/rules.xml; flag OffsetDateTime.now() without UTC',
+    'Correction: "always take it as OffsetDateTime.now(ZoneOffset.UTC)"\nFile: lint/SKILL.md\nEnforce: new; config/pmd/rules.xml; flag OffsetDateTime.now() without UTC\nRule-Id: open-session.1',
     '--', 'lint/SKILL.md',
   ]])
 })
@@ -238,4 +247,29 @@ test('a rule whose commit fails leaves neither the file nor the index changed', 
 
   expect(calls).toContainEqual(['git', '-C', '/home/tester/.claude/skills', 'reset', '-q', '--', 'lint/SKILL.md'])
   expect(written.get('/home/tester/.claude/skills/lint/SKILL.md')).toBe(SKILL)
+})
+
+test('a rule whose file has staged changes is not applied', async ($, on) => {
+  const { calls, written, settle } = world(on, { staged: true })
+  await learned($, settle)
+
+  expect(written.has('/home/tester/.claude/skills/lint/SKILL.md')).toBe(false)
+  expect(commits(calls)).toEqual([])
+  expect(written.get('/home/tester/.claude/learned/open-session.md')).toContain('Not applied: rule: time in UTC: the file has staged changes')
+})
+
+test('a run whose lease another session took over applies nothing', async ($, on) => {
+  const { written, notified, settle } = world(on, { leaseLost: true })
+  await learned($, settle)
+
+  expect(written.has('/home/tester/.claude/skills/lint/SKILL.md')).toBe(false)
+  expect(notified).toEqual([])
+})
+
+test('a worktree folder whose repository is gone is reported, and repo rules wait', async ($, on) => {
+  const { calls, notified, settle } = world(on, { staleWorktree: true })
+  await learned($, settle)
+
+  expect(calls.some(argv => argv.includes('worktree') && argv.includes('add'))).toBe(false)
+  expect(notified).toContain('Remove /home/tester/.claude/learned/repo-worktree: its repository is gone, so repo rules wait until it is deleted.')
 })

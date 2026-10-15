@@ -1,7 +1,7 @@
 import { applyRules, parseRules } from './apply'
 import { enforcerInventory } from './inventory'
 import type { Host } from './host'
-import { releaseLease, takeLease } from './lease'
+import { holdsLease, releaseLease, takeLease } from './lease'
 import { repoPath } from './rules'
 import { prepareWorktree } from './worktree'
 import type { WorktreeState } from './worktree'
@@ -74,7 +74,7 @@ export async function learnNext(io: Host): Promise<void> {
   try {
     const ready = await nextReady(io, due)
     if (ready) {
-      await learnFrom(io, skills, ready)
+      await learnFrom(io, skills, ready, lease)
     }
   } finally {
     isRunning = false
@@ -94,7 +94,7 @@ async function nextReady(io: Host, due: QueuedSession[]): Promise<Ready | undefi
   return undefined
 }
 
-async function learnFrom(io: Host, skills: string, { item, worktree }: Ready): Promise<void> {
+async function learnFrom(io: Host, skills: string, { item, worktree }: Ready, lease: string): Promise<void> {
   const runDir = `${io.home}/.claude/learned/run`
   await io.write(`${runDir}/README.md`, 'The learning run starts here, in a folder with no settings.\n')
   const project = worktree === 'ready' || worktree === 'unsynced' ? repoPath(io, 'project') : null
@@ -111,7 +111,11 @@ async function learnFrom(io: Host, skills: string, { item, worktree }: Ready): P
     await retryLater(io, item, summary)
     return
   }
-  const applied = await applyRules(io, rules, { personal: skills, project })
+  if (!(await holdsLease(io, skills, lease))) {
+    await io.write(summary, output)
+    return
+  }
+  const applied = await applyRules(io, rules, { personal: skills, project }, item.sessionId)
   await io.write(summary, [output, ...applied.refused.map(refusal => `Not applied: ${refusal}`)].join('\n'))
   await finish(io, item)
   if (applied.refused.length > 0) {

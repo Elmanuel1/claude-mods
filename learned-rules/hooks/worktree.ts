@@ -16,6 +16,11 @@ export async function prepareWorktree(io: Host, cwd: string): Promise<WorktreeSt
     return 'none'
   }
   const ours = await commonDir(io, worktree)
+  // The folder outlived its repository, and git cannot add a worktree over it; the mod has no way to delete files.
+  if (!ours && (await io.exists(worktree))) {
+    io.notify(`Remove ${worktree}: its repository is gone, so repo rules wait until it is deleted.`)
+    return 'none'
+  }
   if (ours && ours !== theirs && (await hasOpenRules(io, worktree))) {
     return 'busy'
   }

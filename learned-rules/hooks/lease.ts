@@ -21,6 +21,12 @@ export async function takeLease(io: Host, skills: string): Promise<string | null
   return taken.exitCode === 0 ? mine : null
 }
 
+// A run can outlive its lease; the session that took the lease over then owns the queue item, so this one applies
+// nothing.
+export async function holdsLease(io: Host, skills: string, mine: string): Promise<boolean> {
+  return (await io.run(['git', '-C', skills, 'rev-parse', '-q', '--verify', LEASE_REF])).stdout.trim() === mine
+}
+
 export async function releaseLease(io: Host, skills: string, mine: string): Promise<void> {
   await io.run(['git', '-C', skills, 'update-ref', '-d', LEASE_REF, mine])
 }

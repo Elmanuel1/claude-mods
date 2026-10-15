@@ -10,7 +10,7 @@ export type Enforcement = {
 }
 
 export type Rule = {
-  /** repo + subject: survives the rebase that dropping another rule causes, unlike the commit sha */
+  /** repo + Rule-Id (subject on rules from before Rule-Id): survives the rebase that dropping another rule causes */
   key: string
   repo: RuleRepo
   sha: string

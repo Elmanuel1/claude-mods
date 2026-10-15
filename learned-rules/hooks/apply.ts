@@ -36,10 +36,10 @@ export function parseRules(output: string): unknown[] | null {
 // The mod, not the run, writes and commits each rule, one commit per rule: the file must be a Markdown rule (or the
 // skill-trigger list) inside its repo, each edit must match exactly once, and no edit may add or change a skill's
 // hooks or allowed-tools, which would run commands or widen what the skill may do.
-export async function applyRules(io: Host, entries: unknown[], roots: RuleRoots): Promise<Applied> {
+export async function applyRules(io: Host, entries: unknown[], roots: RuleRoots, runId: string): Promise<Applied> {
   const refused: string[] = []
   for (const [index, entry] of entries.entries()) {
-    const problem = isLearnedRule(entry) ? await applyRule(io, entry, roots) : 'not in the expected shape'
+    const problem = isLearnedRule(entry) ? await applyRule(io, entry, roots, `${runId}.${index + 1}`) : 'not in the expected shape'
     if (problem) {
       refused.push(`${isLearnedRule(entry) ? entry.subject : `entry ${index + 1}`}: ${problem}`)
     }
@@ -47,7 +47,7 @@ export async function applyRules(io: Host, entries: unknown[], roots: RuleRoots)
   return { committed: entries.length - refused.length, refused }
 }
 
-async function applyRule(io: Host, rule: LearnedRule, roots: RuleRoots): Promise<string | null> {
+async function applyRule(io: Host, rule: LearnedRule, roots: RuleRoots, ruleId: string): Promise<string | null> {
   const root = rule.repo === 'personal' ? roots.personal : roots.project
   if (!root) {
     return 'there is no repo worktree this run'
@@ -68,9 +68,13 @@ async function applyRule(io: Host, rule: LearnedRule, roots: RuleRoots): Promise
   if (commands(after) !== commands(before)) {
     return 'it adds or changes a shell command a skill runs when it loads'
   }
+  // A rule's own add, and the reset after a failed commit, would replace or drop what the user staged in that file.
+  if ((await io.run(['git', '-C', root, 'diff', '--cached', '--quiet', '--', rule.file])).exitCode !== 0) {
+    return 'the file has staged changes'
+  }
   await io.write(path, after)
   await io.run(['git', '-C', root, 'add', '--', rule.file])
-  const committed = await io.run(['git', '-C', root, 'commit', '-q', '-m', rule.subject, '-m', bodyOf(rule), '--', rule.file])
+  const committed = await io.run(['git', '-C', root, 'commit', '-q', '-m', rule.subject, '-m', bodyOf(rule, ruleId), '--', rule.file])
   if (committed.exitCode === 0) {
     return null
   }
@@ -92,8 +96,8 @@ function commands(text: string): string {
   return [...text.matchAll(SHELL_IN_SKILL)].map(match => match[0].trim()).join('\n')
 }
 
-function bodyOf(rule: LearnedRule): string {
-  const lines = [`Correction: ${rule.correction}`, `File: ${rule.file}`, rule.enforce ? `Enforce: ${rule.enforce}` : '']
+function bodyOf(rule: LearnedRule, ruleId: string): string {
+  const lines = [`Correction: ${rule.correction}`, `File: ${rule.file}`, rule.enforce ? `Enforce: ${rule.enforce}` : '', `Rule-Id: ${ruleId}`]
   return lines.filter(line => line.length > 0).join('\n')
 }
 

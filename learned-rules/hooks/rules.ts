@@ -60,7 +60,7 @@ async function ruleCommits(io: Host, repo: RuleRepo): Promise<Rule[]> {
     .map(entry => {
       const [sha = '', subject = '', body = ''] = entry.split(FIELD)
       return {
-        key: `${repo}:${subject}`,
+        key: `${repo}:${body.match(/^Rule-Id: (.*)$/m)?.[1] ?? subject}`,
         repo,
         sha,
         title: subject.replace(/^rule:\s*/, ''),
