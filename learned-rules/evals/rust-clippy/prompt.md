@@ -8,7 +8,7 @@ timeout_seconds: 600
 allowed_tools: [Read, Glob, Grep]
 ---
 You maintain this user's Claude Code rules. Below are the messages the user typed in a session that ended (working
-directory: repo). Turn their corrections into durable rules, and nothing else.
+directory: ./repo). Turn their corrections into durable rules, and nothing else.
 
 1. List every correction: an instruction about how code, PRs, docs or replies should be done ("don't X", "use Y",
    "why didn't you...", "should be named...", "let it bubble"). Ignore task requests, questions and one-off choices.
@@ -36,13 +36,13 @@ directory: repo). Turn their corrections into durable rules, and nothing else.
    - partial: an enforcer catches a plain form of the BAD example but not the rest; say which part.
    - none: it is a judgment no tool can see (when a lock is worth it, whether a design is simple enough).
    Target an enforcer from the list, by its file, whenever one can see the rule. Say so when the one you pick runs in
-   no required check. Only when none of them can see it, pick a new tool from plugin/references/enforcers.md,
-   for the language of the files the rule is about. Where plugin/references/<language>.md exists (java.md,
+   no required check. Only when none of them can see it, pick a new tool from ./plugin/references/enforcers.md,
+   for the language of the files the rule is about. Where ./plugin/references/<language>.md exists (java.md,
    for one), read it for how a check of that kind is written and ratcheted.
    Only recommend the check: never propose an edit to a lint config, a check or a hook.
 5. You can only read: the mod applies your rules, one commit per rule, so the user can accept or reject each on its
-   own. Personal rules are files in skills. Repo rules are files in the repo worktree, repo, on the branch docs/learned-rules, up to date with the latest main; never the
-   working directory. Only Markdown files (and skill-triggers.json in skills) can be changed, and a change that
+   own. Personal rules are files in ./skills. Repo rules are files in the repo worktree, ./repo, on the branch docs/learned-rules, up to date with the latest main; never the
+   working directory. Only Markdown files (and skill-triggers.json in ./skills) can be changed, and a change that
    adds or alters a skill's hooks or allowed-tools frontmatter is refused.
 6. Print a short summary: each correction, the file and section it went to and its Enforce status, or why it was
    skipped.
@@ -64,7 +64,7 @@ directory: repo). Turn their corrections into durable rules, and nothing else.
 
 The enforcers that exist:
 -----
-Enforcer files on origin/main in repo (the repo worktree, when there is one, holds this same tree):
+Enforcer files on origin/main in ./repo (the repo worktree, when there is one, holds this same tree):
 - .github/workflows/ci.yml
 - clippy.toml
 What GitHub enforces on acme/app main (a check that is not required here does not block a merge):

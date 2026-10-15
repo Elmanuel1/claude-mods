@@ -9,16 +9,18 @@ import { fileURLToPath } from 'node:url'
 const evals = dirname(fileURLToPath(import.meta.url))
 const template = readFileSync(join(evals, '..', 'prompts', 'learn.md'), 'utf8')
 // The workspace layout setup.sh builds, and the same wording as WORKTREE_NOTES and NO_WORKTREE in hooks/learn.ts.
+// The mod passes absolute paths; a case's are relative to the run's working directory, so they start with ./ or
+// Read is tried against the wrong folder.
 const WORKTREE = {
-  ready: 'repo, on the branch docs/learned-rules, up to date with the latest main',
+  ready: './repo, on the branch docs/learned-rules, up to date with the latest main',
   none: 'none: no repository worktree could be prepared for this session, so skip repo rules',
 }
 
 function render(name, { fixture, description, tags }, messages) {
   const instructions = template
-    .replaceAll('{{CWD}}', fixture === 'none' ? 'notes' : 'repo')
-    .replaceAll('{{PLUGIN_ROOT}}', 'plugin')
-    .replaceAll('{{SKILLS}}', 'skills')
+    .replaceAll('{{CWD}}', fixture === 'none' ? './notes' : './repo')
+    .replaceAll('{{PLUGIN_ROOT}}', './plugin')
+    .replaceAll('{{SKILLS}}', './skills')
     .replaceAll('{{WORKTREE}}', fixture === 'none' ? WORKTREE.none : WORKTREE.ready)
   const inventory = readFileSync(join(evals, '_fixtures', `inventory-${fixture}.md`), 'utf8').trimEnd()
   const frontmatter = [

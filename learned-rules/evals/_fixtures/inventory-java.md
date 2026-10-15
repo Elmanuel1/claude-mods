@@ -1,4 +1,4 @@
-Enforcer files on origin/main in repo (the repo worktree, when there is one, holds this same tree):
+Enforcer files on origin/main in ./repo (the repo worktree, when there is one, holds this same tree):
 - .github/workflows/build.yml
 - config/pmd/baseline.txt
 - config/pmd/rules.xml

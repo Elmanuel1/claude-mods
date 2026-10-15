@@ -1,4 +1,4 @@
-Enforcer files on origin/main in repo (the repo worktree, when there is one, holds this same tree):
+Enforcer files on origin/main in ./repo (the repo worktree, when there is one, holds this same tree):
 - .github/workflows/ci.yml
 - eslint.config.mjs
 What GitHub enforces on acme/app main (a check that is not required here does not block a merge):
