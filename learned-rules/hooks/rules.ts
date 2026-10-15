@@ -17,11 +17,7 @@ async function reviewedKeys(io: Host): Promise<Record<string, 'accepted' | 'reje
   return ((await io.get(REVIEWED_KEY)) as Record<string, 'accepted' | 'rejected'> | undefined) ?? {}
 }
 
-export async function markReviewed(io: Host, rule: Rule, verdict: 'accepted' | 'rejected'): Promise<void> {
-  await markReviewedKey(io, rule.key, verdict)
-}
-
-export async function markReviewedKey(io: Host, key: string, verdict: 'accepted' | 'rejected'): Promise<void> {
+export async function markReviewed(io: Host, key: string, verdict: 'accepted' | 'rejected'): Promise<void> {
   await io.set(REVIEWED_KEY, { ...(await reviewedKeys(io)), [key]: verdict })
 }
 
@@ -124,7 +120,7 @@ export async function reject(io: Host, rule: Rule): Promise<void> {
     io.toast(`Could not reject "${rule.title}": ${undone.stderr.trim().split('\n').pop()}`)
     return
   }
-  await markReviewed(io, rule, 'rejected')
+  await markReviewed(io, rule.key, 'rejected')
   io.toast(`Rejected: ${rule.title}`)
 }
 

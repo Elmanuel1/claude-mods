@@ -78,7 +78,7 @@ export async function act(ui: RulesUi, { action, key }: RuleMessage): Promise<vo
   switch (action) {
     case 'accept':
       await ui.hide(rule)
-      await markReviewed(ui.io, rule, 'accepted')
+      await markReviewed(ui.io, rule.key, 'accepted')
       return ui.refresh()
     case 'reject':
       await ui.hide(rule)

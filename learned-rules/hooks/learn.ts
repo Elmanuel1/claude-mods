@@ -2,7 +2,7 @@ import { enforcerInventory } from './inventory'
 import type { Host } from './host'
 import { releaseLease, takeLease } from './lease'
 import { repoPath } from './rules'
-import { revertSkillPowers, runArgs, runEnv } from './sandbox'
+import { runArgs, runEnv, snapshot, undoSkillPowers } from './sandbox'
 import { prepareWorktree } from './worktree'
 import type { WorktreeState } from './worktree'
 
@@ -71,22 +71,24 @@ export async function learnNext(io: Host): Promise<void> {
   }
 }
 
+// A busy item waits as a failed one does, without using an attempt, so turns do not keep checking it.
 async function nextReady(io: Host, due: QueuedSession[]): Promise<Ready | undefined> {
   for (const item of due) {
     const worktree = await prepareWorktree(io, item.cwd)
     if (worktree !== 'busy') {
       return { item, worktree }
     }
+    await setRetry(io, item, { retryAt: (await io.now()) + RETRY_AFTER_MS })
   }
   return undefined
 }
 
 async function learnFrom(io: Host, skills: string, { item, worktree }: Ready): Promise<void> {
-  const before = (await io.run(['git', '-C', skills, 'rev-parse', 'HEAD'])).stdout.trim()
-  const { code, output } = await io.claude(runArgs(skills, repoPath(io, 'project')), await buildPrompt(io, skills, item, worktree), item.cwd, runEnv(io))
-  const reverted = await revertSkillPowers(io, skills, before)
-  if (reverted > 0) {
-    io.notify(`Reverted ${reverted} personal rule(s) that added hooks or allowed-tools to a skill.`)
+  const before = await snapshot(io, skills)
+  const { code, output } = await io.claude(runArgs(io, skills, repoPath(io, 'project')), await buildPrompt(io, skills, item, worktree), item.cwd, runEnv(io))
+  const undone = await undoSkillPowers(io, skills, before)
+  if (undone > 0) {
+    io.notify(`Undid hooks or allowed-tools the learning run added to ${undone} skill file(s); those rules are rejected.`)
   }
   if (code === null) {
     return
@@ -111,9 +113,12 @@ async function retryLater(io: Host, item: QueuedSession, summary: string): Promi
     io.notify(`The learning run failed ${MAX_ATTEMPTS} times; that session's corrections were dropped. See ${summary}`)
     return
   }
-  const retryAt = (await io.now()) + RETRY_AFTER_MS
-  await io.set('queue', (await queued(io)).map(queuedItem => (queuedItem.sessionId === item.sessionId ? { ...queuedItem, attempts, retryAt } : queuedItem)))
+  await setRetry(io, item, { attempts, retryAt: (await io.now()) + RETRY_AFTER_MS })
   io.notify(`The learning run failed; it tries again in 30 minutes. See ${summary}`)
+}
+
+async function setRetry(io: Host, item: QueuedSession, retry: Pick<QueuedSession, 'attempts' | 'retryAt'>): Promise<void> {
+  await io.set('queue', (await queued(io)).map(queuedItem => (queuedItem.sessionId === item.sessionId ? { ...queuedItem, ...retry } : queuedItem)))
 }
 
 async function finish(io: Host, item: QueuedSession): Promise<void> {

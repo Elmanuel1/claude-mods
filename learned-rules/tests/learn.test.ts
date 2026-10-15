@@ -33,7 +33,15 @@ function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, addsHooks = false
   })
   on('turn.complete', () => ({ text: '' }))
   on('settings.read', () => ({ value: { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'gate.sh' }] }] } } }))
-  on('fs.read', ($, e) => ({ value: e.path.endsWith('prompts/learn.md') ? 'Learn from {{CWD}}.' : '' }))
+  on('fs.read', ($, e) => {
+    if (e.path.endsWith('prompts/learn.md')) {
+      return { value: 'Learn from {{CWD}}.' }
+    }
+    if (e.path.endsWith('lint/SKILL.md')) {
+      return { value: '---\nname: lint\n"hooks":\n  PostToolUse: []\n---\nBody\n' }
+    }
+    return { value: e.path.endsWith('ship/SKILL.md') ? '---\nname: ship\nhooks:\n  Stop: []\n---\nNew body\n' : '' }
+  })
   on('fs.write', () => ({ value: undefined }))
   on('process.spawn', async function* ($, e) {
     spawned.push({ argv: [...e.argv], input: e.input, env: e.env })
@@ -43,11 +51,17 @@ function world(on: On, { env = {}, exitCode = 0, leaseTakenAt, addsHooks = false
   on('process.run', ($, e) => {
     const argv = [...e.argv]
     calls.push(argv)
-    if (argv.includes('rev-list') && argv.some(arg => arg.endsWith('..HEAD'))) {
-      return ran(addsHooks ? 'r1ce\n' : '')
+    if (argv.includes('diff') && argv.includes('--name-only')) {
+      return ran(addsHooks ? 'lint/SKILL.md\nship/SKILL.md\n' : '')
     }
-    if (argv.includes('show') && argv.includes('r1ce')) {
-      return ran('rule: lint on save\n+hooks:\n+  PostToolUse: []\n')
+    if (argv.includes('show') && argv.some(arg => arg.endsWith(':lint/SKILL.md'))) {
+      return ran('---\nname: lint\n---\nBody\n')
+    }
+    if (argv.includes('show') && argv.some(arg => arg.endsWith(':ship/SKILL.md'))) {
+      return ran('---\nname: ship\nhooks:\n  Stop: []\n---\nOld body\n')
+    }
+    if (argv.includes('log') && argv.includes('--format=%s')) {
+      return ran('rule: lint on save\n')
     }
     if (argv.includes('commit-tree')) {
       return ran('1ea5e\n')
@@ -95,7 +109,7 @@ test('a session with corrections is queued when it ends and learned from by an o
   const allowed = spawned[0]?.argv[spawned[0].argv.indexOf('--allowedTools') + 1] ?? ''
   expect(allowed).toContain('Bash(git -C /home/tester/.claude/learned/repo-worktree commit *)')
   expect(allowed).toContain('Edit(~/.claude/skills/**/*.md)')
-  expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--setting-sources', '', '--strict-mcp-config', '--disable-slash-commands']))
+  expect(spawned[0]?.argv).toEqual(expect.arrayContaining(['--restricted', '--strict-mcp-config', '--disable-slash-commands']))
   expect(spawned[0]?.env).toMatchObject({ GIT_CONFIG_KEY_0: 'core.hooksPath' })
   expect(allowed).not.toContain('Bash(git -C *)')
   expect(spawned[0]?.input).toMatch(/^Learn from \/work\/repo\./)
@@ -181,13 +195,14 @@ test('a lease another session took in the last hour keeps this session from runn
   expect(spawned).toHaveLength(0)
 })
 
-test('a personal rule that adds hooks to a skill is reverted and marked rejected', async ($, on) => {
+test('a skill whose frontmatter gained hooks goes back to the snapshot; one that only changed its body stays', async ($, on) => {
   const { notified, calls, settle } = world(on, { addsHooks: true })
   await endTypedSession($)
 
   await scanned($)
   await settle()
 
-  expect(calls).toContainEqual(['git', '-C', '/home/tester/.claude/skills', 'revert', '--no-edit', 'r1ce'])
-  expect(notified).toContain('Reverted 1 personal rule(s) that added hooks or allowed-tools to a skill.')
+  expect(calls).toContainEqual(expect.arrayContaining(['checkout', '--', 'lint/SKILL.md']))
+  expect(calls.some(argv => argv.includes('checkout') && argv.includes('ship/SKILL.md'))).toBe(false)
+  expect(notified).toContain('Undid hooks or allowed-tools the learning run added to 1 skill file(s); those rules are rejected.')
 })
