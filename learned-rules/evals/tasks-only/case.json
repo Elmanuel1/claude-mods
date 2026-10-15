@@ -1,0 +1,8 @@
+{
+  "fixture": "java",
+  "description": "A session of tasks and questions has no rule to learn",
+  "tags": [
+    "skip",
+    "java"
+  ]
+}

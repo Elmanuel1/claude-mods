@@ -1,0 +1,8 @@
+{
+  "fixture": "java",
+  "description": "Being told to use a skill adds a trigger to skill-triggers.json",
+  "tags": [
+    "triggers",
+    "java"
+  ]
+}

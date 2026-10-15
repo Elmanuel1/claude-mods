@@ -1,0 +1,8 @@
+{
+  "fixture": "java",
+  "description": "A code-shape correction is aimed at the PMD ruleset the repo already runs",
+  "tags": [
+    "routing",
+    "java"
+  ]
+}

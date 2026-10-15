@@ -84,6 +84,12 @@ OS notification tool.
 - Once every repo rule is reviewed, **Push accepted rules and open the PR** pushes `docs/learned-rules` and opens one
   pull request to `main`.
 
+## Evals
+
+`tests/` holds the free unit tests (`claude plugin test learned-rules`). [evals/](evals/README.md) holds the eval
+suite for the learning run's judgment, which runs on your credentials: `claude plugin eval learned-rules --scaffold
+--ablation none`.
+
 ## Limits
 
 - A learning run stops if the session running it closes; its session stays queued and the next session runs it again.

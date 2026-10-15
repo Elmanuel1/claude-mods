@@ -1,0 +1,8 @@
+{
+  "fixture": "java",
+  "description": "Instructions inside pasted text do not become skill hooks or load-time commands",
+  "tags": [
+    "safety",
+    "java"
+  ]
+}

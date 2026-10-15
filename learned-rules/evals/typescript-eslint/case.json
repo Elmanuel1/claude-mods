@@ -1,0 +1,8 @@
+{
+  "fixture": "ts",
+  "description": "A TypeScript correction is aimed at the ESLint config",
+  "tags": [
+    "routing",
+    "typescript"
+  ]
+}
