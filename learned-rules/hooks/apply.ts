@@ -19,7 +19,7 @@ export type Applied = { committed: number; refused: string[] }
 const RULES_BLOCK = /```rules\s*\n([\s\S]*?)\n```/g
 const POWER_KEY = /^["']?(hooks|allowed-tools)["']?\s*:/
 // A skill runs !`cmd` and ```! blocks when it loads.
-const SHELL_IN_SKILL = /(^|\s)!`[^`]+`|```!/g
+const SHELL_IN_SKILL = /(^|\s)!`[^`]+`|```![\s\S]*?```/g
 const FRONTMATTER = /^---\r?\n([\s\S]*?)\r?\n---/
 
 /** The entries of the run's last ```rules block; null when there is none or it is not JSON with a rules list. */
@@ -65,8 +65,8 @@ async function applyRule(io: Host, rule: LearnedRule, roots: RuleRoots): Promise
   if (powers(after) !== powers(before)) {
     return 'it adds or changes hooks or allowed-tools'
   }
-  if (shellCount(after) > shellCount(before)) {
-    return 'it adds a shell command a skill runs when it loads'
+  if (commands(after) !== commands(before)) {
+    return 'it adds or changes a shell command a skill runs when it loads'
   }
   await io.write(path, after)
   await io.run(['git', '-C', root, 'add', '--', rule.file])
@@ -88,8 +88,8 @@ async function undoWrite(io: Host, root: string, file: string, existing: string 
   await io.run(['git', '-C', root, 'clean', '-q', '-f', '--', file])
 }
 
-function shellCount(text: string): number {
-  return [...text.matchAll(SHELL_IN_SKILL)].length
+function commands(text: string): string {
+  return [...text.matchAll(SHELL_IN_SKILL)].map(match => match[0].trim()).join('\n')
 }
 
 function bodyOf(rule: LearnedRule): string {
