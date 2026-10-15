@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<ruleset name="acme" xmlns="http://pmd.sourceforge.net/ruleset/2.0.0">
+    <description>CLAUDE.md text rules. pmdRatchet fails a file that gains a violation over config/pmd/baseline.txt.</description>
+
+    <rule name="NoSubquery" language="java" class="net.sourceforge.pmd.lang.rule.xpath.XPathRule"
+          message="Rule 2: no subqueries (asTable, EXISTS, IN select, scalar subselect); use a join or DISTINCT ON">
+        <priority>3</priority>
+        <properties>
+            <property name="xpath">
+                <value><![CDATA[
+//MethodCall[@MethodName = ('asTable', 'exists', 'notExists')]
+  | //MethodCall[@MethodName = ('in', 'notIn')][ArgumentList/MethodCall[@MethodName = 'select']]
+]]></value>
+            </property>
+        </properties>
+    </rule>
+
+    <rule name="NoElse" language="java" class="net.sourceforge.pmd.lang.rule.xpath.XPathRule"
+          message="Code shape: no else; return early instead">
+        <priority>3</priority>
+        <properties>
+            <property name="xpath">
+                <value><![CDATA[//IfStatement[@Else = true()]]]></value>
+            </property>
+        </properties>
+    </rule>
+</ruleset>

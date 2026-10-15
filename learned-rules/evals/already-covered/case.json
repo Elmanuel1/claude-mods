@@ -1,0 +1,8 @@
+{
+  "fixture": "java",
+  "description": "A correction the rules and the PMD ruleset already cover adds nothing",
+  "tags": [
+    "skip",
+    "java"
+  ]
+}

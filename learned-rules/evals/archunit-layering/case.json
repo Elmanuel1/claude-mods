@@ -1,0 +1,8 @@
+{
+  "fixture": "java",
+  "description": "A layering correction is aimed at the ArchUnit spec",
+  "tags": [
+    "routing",
+    "java"
+  ]
+}

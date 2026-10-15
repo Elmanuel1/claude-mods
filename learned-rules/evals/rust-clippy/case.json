@@ -1,0 +1,8 @@
+{
+  "fixture": "rust",
+  "description": "A Rust correction is aimed at clippy.toml",
+  "tags": [
+    "routing",
+    "rust"
+  ]
+}
