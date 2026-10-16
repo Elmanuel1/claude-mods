@@ -30,6 +30,7 @@ const FAILED_LANDING = { ...FAILED_DRAFT, commit: 'abc123', error: 'the conflict
 const START = { cwd: CHECKOUT, surface: 'desktop', isInteractive: true } as const
 
 const ok = (stdout = ''): ProcessRunResult => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
+const fail = (exitCode: number, stderr: string): ProcessRunResult => ({ exitCode, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false })
 
 function answer(argv: readonly string[]): ProcessRunResult {
   const fixed: Record<string, ProcessRunResult> = {
@@ -43,7 +44,7 @@ function answer(argv: readonly string[]): ProcessRunResult {
   return fixed[argv.join(' ')] ?? ok()
 }
 
-function world(on: On, store: Record<string, unknown>) {
+function world(on: On, store: Record<string, unknown>, overrides: Record<string, ProcessRunResult> = {}) {
   const toasts: string[] = []
   const ran: string[] = []
   const spawned: string[] = []
@@ -56,7 +57,7 @@ function world(on: On, store: Record<string, unknown>) {
   on('ui.log', () => ({ value: undefined }))
   on('process.run', (_$, e) => {
     ran.push(e.argv.join(' '))
-    return { value: answer(e.argv) }
+    return { value: overrides[e.argv.join(' ')] ?? answer(e.argv) }
   })
   on('agent.spawn', (_$, e) => {
     spawned.push(e.prompt)
@@ -127,4 +128,20 @@ test('Retry on a failed landing puts its commit back in the docs branch queue', 
   expect(ran.some((c) => c.includes('worktree add --detach'))).toBe(false)
   expect(saved.at(0)?.status).toBe('applying')
   expect(saved.at(0)?.error).toBeUndefined()
+})
+
+test('Retry that cannot start a draft says why and keeps the item failed', async ($, on) => {
+  const addFails = { [`git -C ${CHECKOUT} worktree add --detach ${WORK} origin/main`]: fail(128, `fatal: '${WORK}' already exists`) }
+  const { toasts, spawned, saved } = world(on, { 'repo:o/r': CHECKOUT, [`pr:${FAILED_DRAFT.key}`]: FAILED_DRAFT }, addFails)
+  await $.session.start(START)
+
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await pane.press({ key: `retry-${FAILED_DRAFT.key}` })
+
+  expect(spawned).toEqual([])
+  expect(toasts).not.toContain('Drafting the docs for o/r#7 again…')
+  expect(toasts).toContain('Retry for o/r#7 failed; the reason is under Recent errors in /docs-watch.')
+  expect(saved.at(-1)?.status).toBe('failed')
+  expect(await pane.find({ type: 'Text', text: `Failed: fatal: '${WORK}' already exists` })).toBeDefined()
+  await pane.unmount()
 })

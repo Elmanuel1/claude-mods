@@ -169,8 +169,11 @@ function paneActions($: Engine): PaneActions {
     retry: (t) =>
       inBackground($, 'Retry', async () => {
         await showStatus($, t, t.commit ? 'applying' : 'drafting')
-        await retry(io, t)
-        await refreshShown($)
+        try {
+          await retry(io, t)
+        } finally {
+          await refreshShown($)
+        }
       }),
     openPr: (url) => inBackground($, 'Open', () => runLogged(io, 'open', ['open', url])),
     clearErrors: () =>
