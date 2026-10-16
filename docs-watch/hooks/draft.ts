@@ -111,6 +111,19 @@ export async function redo(io: Host, t: Tracked, note: string): Promise<void> {
   io.toast(`Redrafting the docs for ${t.key}…`)
 }
 
+// A failed update with a commit failed while landing on the shared branch, so it goes back in that queue; one without
+// a commit failed while drafting, so it drafts again from the latest default branch.
+export async function retry(io: Host, t: Tracked): Promise<void> {
+  const cleared: Tracked = { ...t, error: undefined, pendingStart: undefined }
+  if (t.commit) {
+    await save(io, { ...cleared, status: 'applying' })
+    io.toast(`Adding the docs for ${t.key} to the docs branch again…`)
+    return
+  }
+  await startDraft(io, cleared)
+  io.toast(`Drafting the docs for ${t.key} again…`)
+}
+
 export async function dismiss(io: Host, t: Tracked): Promise<void> {
   await removeWorktree(io, t)
   await save(io, { ...t, status: 'dismissed' })

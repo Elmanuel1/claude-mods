@@ -63,7 +63,10 @@ only exit codes and the repository permission, so no token is ever shown.
    (`brew install terminal-notifier`), a newer one replaces the last instead of stacking.
 8. **Errors.** Every failed `git` or `gh` command, refused subagent start and unreadable result file goes to the debug
    log and to the pane's **Recent errors** list. A draft or conflict resolution whose subagent the engine refused to
-   start waits, and the next turn, `/docs-watch` or session start tries again.
+   start waits, and the next turn, `/docs-watch` or session start tries again. A failed update shows its reason in the
+   list, the line above the prompt says "N docs update(s) failed" with **Review**, and **Retry** starts it over: a
+   failed draft drafts again from the latest default branch, and one that failed while landing on `docs/updates` goes
+   back in that queue. **Clear** drops it.
 
 ## Limits
 

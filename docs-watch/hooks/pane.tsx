@@ -17,6 +17,7 @@ export type PaneActions = {
   toggleDiff: (t: Tracked) => void
   dismiss: (t: Tracked) => void
   redo: (t: Tracked, note: string) => void
+  retry: (t: Tracked) => void
   openPr: (url: string) => void
   clearErrors: () => void
 }
@@ -117,7 +118,12 @@ function itemView(kit: Kit, t: Tracked, open: PaneModel['open'], act: PaneAction
           onSubmit={(value: string) => act.redo(t, value)}
         />
       )}
-      {t.status === 'failed' && <Button key={`clear-${t.key}`} label="Clear" onPress={() => act.dismiss(t)} />}
+      {t.status === 'failed' && (
+        <Box>
+          <Button key={`retry-${t.key}`} label="Retry" onPress={() => act.retry(t)} />
+          <Button key={`clear-${t.key}`} label="Clear" onPress={() => act.dismiss(t)} />
+        </Box>
+      )}
       {isOpen && open && <Markdown text={`\`\`\`diff\n${open.text}\n\`\`\``} />}
     </Box>
   )
