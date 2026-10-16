@@ -36,11 +36,12 @@ async function startAgent(io: Host, spec: SpawnSpec): Promise<{ agentId: string 
   }
 }
 
-export async function startDraft(io: Host, t: Tracked): Promise<void> {
+// False when the draft could not start: no checkout is registered for the repository, or its worktree was not created.
+export async function startDraft(io: Host, t: Tracked): Promise<boolean> {
   const checkout = await checkoutOf(io, t.repo)
   if (!checkout) {
     await logError(io, 'draft', `no local checkout registered for ${t.repo}: open a Claude Code session in it`, t.key)
-    return
+    return false
   }
   const dir = await stateDir(io)
   const work = `${dir}/work/${slug(t.key)}`
@@ -51,11 +52,12 @@ export async function startDraft(io: Host, t: Tracked): Promise<void> {
   const added = await runLogged(io, 'draft', ['git', '-C', checkout, 'worktree', 'add', '--detach', work, base], undefined, t.key)
   if (added.exitCode !== 0) {
     await save(io, { ...t, status: 'failed', error: lastLine(added) })
-    return
+    return false
   }
   const drafting: Tracked = { ...t, status: 'drafting', checkout, work, base, startedAt: Date.now() }
   await save(io, drafting)
   await startWriter(io, drafting, '')
+  return true
 }
 
 export async function startWriter(io: Host, t: Tracked, note: string): Promise<void> {
@@ -109,6 +111,19 @@ export async function redo(io: Host, t: Tracked, note: string): Promise<void> {
   await save(io, drafting)
   await startWriter(io, drafting, note)
   io.toast(`Redrafting the docs for ${t.key}…`)
+}
+
+// A failed update with a commit failed while landing on the shared branch, so it goes back in that queue; one without
+// a commit failed while drafting, so it drafts again from the latest default branch.
+export async function retry(io: Host, t: Tracked): Promise<void> {
+  const cleared: Tracked = { ...t, error: undefined, pendingStart: undefined }
+  if (t.commit) {
+    await save(io, { ...cleared, status: 'applying' })
+    io.toast(`Adding the docs for ${t.key} to the docs branch again…`)
+    return
+  }
+  const started = await startDraft(io, cleared)
+  io.toast(started ? `Drafting the docs for ${t.key} again…` : `Retry for ${t.key} failed; the reason is under Recent errors in /docs-watch.`)
 }
 
 export async function dismiss(io: Host, t: Tracked): Promise<void> {
