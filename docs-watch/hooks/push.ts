@@ -3,7 +3,7 @@ import { BRANCH, defaultBase, ensureBranch } from './git'
 import type { Host } from './host'
 import { logError, notify, runLogged } from './log'
 import { allTracked, branchState, checkoutOf, save, saveBranchState } from './store'
-import { lastLine, prBody, prTitle } from './text'
+import { failureReason, prBody, prTitle } from './text'
 
 // A push runs git and gh in one session; a flag older than this was left by a session that ended mid-push.
 const PUSH_STALE_MS = 10 * 60 * 1000
@@ -56,7 +56,7 @@ async function pushAndOpen(io: Host, repo: string, checkout: string, branch: str
   }
   const pushed = await runLogged(io, 'push', ['git', '-C', branch, 'push', '--force-with-lease', '-u', 'origin', BRANCH], undefined, repo)
   if (pushed.exitCode !== 0) {
-    return { error: `git push: ${lastLine(pushed)}` }
+    return { error: `git push: ${failureReason(pushed)}` }
   }
   const title = prTitle(subjects)
   const included = (await allTracked(io)).filter((t) => t.repo === repo && (t.status === 'approved' || t.status === 'pushed'))
@@ -64,12 +64,12 @@ async function pushAndOpen(io: Host, repo: string, checkout: string, branch: str
   const open = prUrl ?? (await openPrFor(io, repo))
   if (open) {
     const edited = await runLogged(io, 'push', ['gh', 'pr', 'edit', open, '--title', title, '--body', body], undefined, repo)
-    return edited.exitCode === 0 ? { url: open } : { error: `gh pr edit: ${lastLine(edited)}` }
+    return edited.exitCode === 0 ? { url: open } : { error: `gh pr edit: ${failureReason(edited)}` }
   }
   const base = baseRef.replace(/^origin\//, '')
   const create = ['gh', 'pr', 'create', '--repo', repo, '--base', base, '--head', BRANCH, '--title', title, '--body', body]
   const created = await runLogged(io, 'push', create, branch, repo)
-  return created.exitCode === 0 ? { url: created.stdout.trim().split('\n').pop() ?? '' } : { error: `gh pr create: ${lastLine(created)}` }
+  return created.exitCode === 0 ? { url: created.stdout.trim().split('\n').pop() ?? '' } : { error: `gh pr create: ${failureReason(created)}` }
 }
 
 async function openPrFor(io: Host, repo: string): Promise<string | undefined> {
