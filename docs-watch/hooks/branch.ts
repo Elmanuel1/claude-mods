@@ -184,8 +184,8 @@ async function followMain(io: Host, repo: string, state: BranchState, branch: st
   }
 }
 
-// Retry fetches and clears the failed pushes' reasons, so the next pass of advanceQueues pushes them again against
-// the remote branch as it is now.
+// Retry clears the failed pushes' reasons, so the next pass of advanceQueues pushes them again. It prunes only refs whose
+// branch GitHub deleted; a full fetch would move the lease past someone else's push and the force push would drop it.
 export async function clearPushErrors(io: Host): Promise<void> {
   for (const repo of await registeredRepos(io)) {
     const state = await branchState(io, repo)
@@ -194,7 +194,7 @@ export async function clearPushErrors(io: Host): Promise<void> {
     }
     const checkout = await checkoutOf(io, repo)
     if (checkout) {
-      await fetchOrigin(io, checkout, 'retry', repo)
+      await runLogged(io, 'retry', ['git', '-C', checkout, 'remote', 'prune', 'origin'], undefined, repo)
     }
     await saveBranchState(io, repo, { ...state, lastError: undefined })
   }
