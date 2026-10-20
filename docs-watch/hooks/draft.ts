@@ -1,9 +1,9 @@
 import type { Tracked } from '../types'
-import { defaultBase, removeWorktree } from './git'
+import { defaultBase, fetchOrigin, removeWorktree } from './git'
 import type { Host, SpawnSpec } from './host'
 import { logError, notify, readResult, runLogged, stateDir } from './log'
 import { checkoutOf, save } from './store'
-import { describe, docsTitleFrom, lastLine, slug } from './text'
+import { describe, docsTitleFrom, failureReason, slug } from './text'
 
 export const DRAFT_TIMEOUT_MS = 45 * 60 * 1000
 const DIFF_LIMIT = 60000
@@ -45,12 +45,12 @@ export async function startDraft(io: Host, t: Tracked): Promise<void> {
   const dir = await stateDir(io)
   const work = `${dir}/work/${slug(t.key)}`
   await runLogged(io, 'draft', ['mkdir', '-p', `${dir}/work`, `${dir}/results`], undefined, t.key)
-  await runLogged(io, 'draft', ['git', '-C', checkout, 'fetch', '-q', 'origin'], undefined, t.key)
+  await fetchOrigin(io, checkout, 'draft', t.key)
   const base = await defaultBase(io, checkout)
   await io.run(['git', '-C', checkout, 'worktree', 'remove', '--force', work])
   const added = await runLogged(io, 'draft', ['git', '-C', checkout, 'worktree', 'add', '--detach', work, base], undefined, t.key)
   if (added.exitCode !== 0) {
-    await save(io, { ...t, status: 'failed', error: lastLine(added) })
+    await save(io, { ...t, status: 'failed', error: failureReason(added) })
     return
   }
   const drafting: Tracked = { ...t, status: 'drafting', checkout, work, base, startedAt: Date.now() }

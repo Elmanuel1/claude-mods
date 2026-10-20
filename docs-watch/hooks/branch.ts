@@ -1,11 +1,11 @@
 import type { BranchState, Tracked } from '../types'
 import { DRAFT_TIMEOUT_MS, spawnFor } from './draft'
-import { BRANCH, defaultBase, ensureBranch, picking, rebuild, removeWorktree, replay } from './git'
+import { BRANCH, defaultBase, ensureBranch, fetchOrigin, picking, rebuild, removeWorktree, replay } from './git'
 import type { Host } from './host'
 import { logError, notify, readResult, runLogged, stateDir } from './log'
 import { pushRunning, requestPush } from './push'
 import { allTracked, branchState, branchWorktree, checkoutOf, leaseIsMine, registeredRepos, save, saveBranchState } from './store'
-import { docsTitleFrom, lastLine, slug } from './text'
+import { docsTitleFrom, failureReason, slug } from './text'
 
 export async function mergeResult(io: Host, t: Tracked): Promise<string> {
   return `${await stateDir(io)}/results/${slug(t.key)}.merge.json`
@@ -26,7 +26,7 @@ export async function approve(io: Host, t: Tracked): Promise<void> {
   const committed = await runLogged(io, 'approve', commitArgs, undefined, t.key)
   const head = await runLogged(io, 'approve', ['git', '-C', t.work, 'rev-parse', 'HEAD'], undefined, t.key)
   if (committed.exitCode !== 0 || head.exitCode !== 0) {
-    await save(io, { ...t, status: 'failed', error: lastLine(committed) })
+    await save(io, { ...t, status: 'failed', error: failureReason(committed) })
     return
   }
   const commit = head.stdout.trim()
@@ -176,7 +176,7 @@ async function followDocsPr(io: Host, repo: string, state: BranchState, branch: 
 }
 
 async function followMain(io: Host, repo: string, state: BranchState, branch: string, checkout: string): Promise<void> {
-  await runLogged(io, 'docs branch', ['git', '-C', checkout, 'fetch', '-q', 'origin'])
+  await fetchOrigin(io, checkout, 'docs branch')
   const head = (await io.run(['git', '-C', checkout, 'rev-parse', await defaultBase(io, checkout)])).stdout.trim()
   if (head && head !== state.baseSha) {
     const baseSha = await rebuild(io, repo, branch, checkout)
@@ -184,12 +184,18 @@ async function followMain(io: Host, repo: string, state: BranchState, branch: st
   }
 }
 
-// Retry clears the failed pushes' reasons, so the next pass of advanceQueues pushes them again.
+// Retry clears the failed pushes' reasons, so the next pass of advanceQueues pushes them again. It prunes only refs whose
+// branch GitHub deleted; a full fetch would move the lease past someone else's push and the force push would drop it.
 export async function clearPushErrors(io: Host): Promise<void> {
   for (const repo of await registeredRepos(io)) {
     const state = await branchState(io, repo)
-    if (state.lastError) {
-      await saveBranchState(io, repo, { ...state, lastError: undefined })
+    if (!state.lastError) {
+      continue
     }
+    const checkout = await checkoutOf(io, repo)
+    if (checkout) {
+      await runLogged(io, 'retry', ['git', '-C', checkout, 'remote', 'prune', 'origin'], undefined, repo)
+    }
+    await saveBranchState(io, repo, { ...state, lastError: undefined })
   }
 }

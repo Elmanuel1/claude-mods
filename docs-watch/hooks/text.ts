@@ -10,7 +10,21 @@ export const describe = (error: unknown) => (error instanceof Error ? `${error.n
 
 export const slug = (key: string) => key.replace(/[^A-Za-z0-9]+/g, '-')
 
-export const lastLine = (out: { stderr: string; stdout: string }) => (out.stderr.trim() || out.stdout.trim()).split('\n').pop() ?? ''
+// git ends a failure with a generic summary ("error: failed to push some refs"); the cause is on an earlier
+// `! [rejected] ref -> ref (reason)`, `fatal:` or `remote: error:` line.
+const CAUSE_LINE = /^! \[|^fatal:|^remote: (error|fatal)/
+const PUSH_CAUSES: [RegExp, string][] = [
+  [/\(stale info\)/, 'the remote branch moved since the last fetch (deleted after its PR merged, or pushed from elsewhere)'],
+  [/\(fetch first\)|\(non-fast-forward\)/, 'the remote branch has commits the local one does not'],
+  [/GH006|protected branch/, 'the branch is protected on GitHub'],
+]
+
+export function failureReason(out: { stderr: string; stdout: string }): string {
+  const lines = (out.stderr.trim() || out.stdout.trim()).split('\n').map((l) => l.trim()).filter(Boolean)
+  const line = lines.find((l) => CAUSE_LINE.test(l)) ?? lines.at(-1) ?? ''
+  const cause = PUSH_CAUSES.find(([pattern]) => pattern.test(line))?.[1]
+  return cause ? `${line}: ${cause}` : line
+}
 
 export function parseJson<T>(text: string): T | null {
   try {

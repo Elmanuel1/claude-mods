@@ -1,6 +1,6 @@
 import type { LogEntry } from '../types'
 import type { Host } from './host'
-import { describe, lastLine, parseJson } from './text'
+import { describe, failureReason, parseJson } from './text'
 
 const LOG_KEY = 'log'
 const LOG_LIMIT = 100
@@ -26,7 +26,7 @@ export async function runLogged(io: Host, where: string, argv: string[], cwd?: s
   if (result.exitCode === 0) {
     return result
   }
-  await logError(io, where, `\`${argv.join(' ').slice(0, 200)}\` exited ${result.exitCode}: ${lastLine(result)}`, key)
+  await logError(io, where, `\`${argv.join(' ').slice(0, 200)}\` exited ${result.exitCode}: ${failureReason(result)}`, key)
   const tool = argv[0]
   if (tool === 'git' || tool === 'gh') {
     await io.commandFailed(tool)

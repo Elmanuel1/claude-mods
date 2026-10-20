@@ -11,6 +11,12 @@ export async function defaultBase(io: Host, checkout: string): Promise<string> {
   return head.exitCode === 0 ? head.stdout.trim() : 'origin/main'
 }
 
+// Prunes so a branch GitHub deleted (the docs branch after its PR merged) drops its remote-tracking ref; a stale one
+// makes --force-with-lease reject every later push.
+export async function fetchOrigin(io: Host, checkout: string, where: string, key?: string): Promise<void> {
+  await runLogged(io, where, ['git', '-C', checkout, 'fetch', '-q', '--prune', 'origin'], undefined, key)
+}
+
 export async function removeWorktree(io: Host, t: Tracked): Promise<void> {
   if (t.checkout && t.work) {
     await runLogged(io, 'remove worktree', ['git', '-C', t.checkout, 'worktree', 'remove', '--force', t.work], undefined, t.key)
@@ -50,7 +56,7 @@ export async function rebuild(io: Host, repo: string, branch: string, checkout: 
   if (dirty || (await picking(io, branch))) {
     return ''
   }
-  await runLogged(io, 'rebuild', ['git', '-C', checkout, 'fetch', '-q', 'origin'])
+  await fetchOrigin(io, checkout, 'rebuild')
   const base = await defaultBase(io, checkout)
   await runLogged(io, 'rebuild', ['git', '-C', branch, 'reset', '-q', '--hard', base])
   for (const t of (await allTracked(io)).filter((t) => t.repo === repo && t.status === 'approved')) {
