@@ -28,8 +28,8 @@ async function pushAndOpen(io: Host, t: Tracked, branch: string): Promise<{ url:
     return { error: `git push: ${lastLine(pushed)}` }
   }
   const open = await openPrFor(io, t, branch)
-  if (open) {
-    return { url: open }
+  if ('error' in open || open.url) {
+    return open
   }
   const base = (await defaultBase(io, t.checkout)).replace(/^origin\//, '')
   const title = t.docsTitle ?? docsTitleFrom(t)
@@ -38,7 +38,7 @@ async function pushAndOpen(io: Host, t: Tracked, branch: string): Promise<{ url:
   return created.exitCode === 0 ? { url: created.stdout.trim().split('\n').pop() ?? '' } : { error: `gh pr create: ${lastLine(created)}` }
 }
 
-async function openPrFor(io: Host, t: Tracked, branch: string): Promise<string | undefined> {
+async function openPrFor(io: Host, t: Tracked, branch: string): Promise<{ url: string } | { error: string }> {
   const found = await runLogged(io, 'push', ['gh', 'pr', 'list', '--repo', t.repo, '--head', branch, '--state', 'open', '--json', 'url', '-q', '.[0].url'], undefined, t.key)
-  return found.stdout.trim() || undefined
+  return found.exitCode === 0 ? { url: found.stdout.trim() } : { error: `gh pr list: ${lastLine(found)}` }
 }
