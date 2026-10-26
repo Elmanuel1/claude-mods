@@ -2,6 +2,7 @@ import type { RenderElement } from 'claude-code'
 
 import type { LogEntry, Missing, Tracked } from '../types'
 import type { Kit } from './host'
+import { docsBranch } from './git'
 import { describeMissing } from './requirements'
 
 export type PaneModel = {
@@ -83,7 +84,7 @@ function statusLine(kit: Kit, t: Tracked, act: PaneActions): RenderElement | nul
   if (t.status !== 'approved') {
     return null
   }
-  return t.error ? <Text color="red">{`Push failed: ${t.error}`}</Text> : <Text>{`Approved, pushing ${t.branch ?? ''}…`}</Text>
+  return t.error ? <Text color="red">{`Push failed: ${t.error}`}</Text> : <Text>{`Approved, pushing ${docsBranch(t)}…`}</Text>
 }
 
 function itemView(kit: Kit, t: Tracked, open: PaneModel['open'], act: PaneActions): RenderElement {

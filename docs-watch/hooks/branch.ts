@@ -6,17 +6,16 @@ import { pushOne } from './push'
 import { allTracked, leaseIsMine, save } from './store'
 import { docsTitleFrom, lastLine } from './text'
 
-// Commits the draft on its own branch in its worktree; the branch outlives the worktree. Pushing is left to the session
+// Commits the draft on its own branch (docsBranch) in its worktree; the branch outlives the worktree. Pushing is left to the session
 // holding the poll lease (advanceQueues).
 export async function approve(io: Host, t: Tracked): Promise<void> {
   if (!t.work) {
     await save(io, { ...t, status: 'failed', error: 'its worktree is missing; clear it and it drafts again after the next merge' })
     return
   }
-  const branch = docsBranch(t)
   const body = `${t.summary ?? ''}\n\nAfter #${t.number}${t.url ? ` (${t.url})` : ''}.`
   const steps = [
-    ['git', '-C', t.work, 'switch', '-q', '-C', branch],
+    ['git', '-C', t.work, 'switch', '-q', '-C', docsBranch(t)],
     ['git', '-C', t.work, 'add', '-A'],
     ['git', '-C', t.work, 'commit', '-q', '-m', t.docsTitle ?? docsTitleFrom(t), '-m', body],
   ]
@@ -28,14 +27,14 @@ export async function approve(io: Host, t: Tracked): Promise<void> {
     }
   }
   await removeWorktree(io, t)
-  await save(io, { ...t, status: 'approved', branch, error: undefined })
+  await save(io, { ...t, status: 'approved', error: undefined })
 }
 
 // Work on the pushes runs one pass at a time in this session; a pass asked for while one runs is skipped, and the next
 // timer tick picks up what it would have done.
 let running: Promise<void> | null = null
 
-export async function exclusive(work: () => Promise<void>): Promise<void> {
+async function exclusive(work: () => Promise<void>): Promise<void> {
   if (running) {
     return
   }
@@ -64,8 +63,8 @@ export async function checkDocsPr(io: Host, t: Tracked): Promise<void> {
   if (view.exitCode !== 0 || (state !== 'MERGED' && state !== 'CLOSED')) {
     return
   }
-  if (t.checkout && t.branch) {
-    await runLogged(io, 'docs PR', ['git', '-C', t.checkout, 'branch', '-D', t.branch], undefined, t.key)
+  if (t.checkout) {
+    await runLogged(io, 'docs PR', ['git', '-C', t.checkout, 'branch', '-D', docsBranch(t)], undefined, t.key)
   }
   const merged = state === 'MERGED'
   await save(io, { ...t, status: merged ? 'merged' : 'dismissed', announce: false })

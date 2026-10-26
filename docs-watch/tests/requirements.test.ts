@@ -204,7 +204,7 @@ test('a failed push keeps the update approved with its reason, and Retry pushes 
 })
 
 test('a merged docs PR takes its update off the list and deletes its local branch', async ($, on) => {
-  const pushed = { ...SUGGESTED, status: 'pushed', branch: 'docs/updates-7', prUrl: DOCS_PR }
+  const pushed = { ...SUGGESTED, status: 'pushed', prUrl: DOCS_PR }
   const { ran, clock } = world(on, ALL_PRESENT, { 'repo:o/r': CHECKOUT, [`pr:${SUGGESTED.key}`]: pushed })
   await $.session.start(START)
   await clock.advance(FIRST_TICK)

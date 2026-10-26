@@ -7,7 +7,7 @@ import { docsTitleFrom, lastLine, prBody } from './text'
 
 // Pushes one approved update's branch and opens its PR. A push that failed keeps the update approved with the reason.
 export async function pushOne(io: Host, t: Tracked): Promise<void> {
-  const outcome = await pushAndOpen(io, t, t.branch ?? docsBranch(t))
+  const outcome = await pushAndOpen(io, t, docsBranch(t))
   if ('error' in outcome) {
     await logError(io, 'push', outcome.error, t.key)
     await save(io, { ...t, error: outcome.error })

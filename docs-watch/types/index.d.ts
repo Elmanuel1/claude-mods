@@ -34,8 +34,6 @@ export type Tracked = {
   pendingStart?: boolean
   /** the person's note for a redraft still waiting to start */
   note?: string
-  /** the draft's own branch, committed on approval and pushed for its own PR */
-  branch?: string
   /** its PR was just opened; the line above the prompt offers it until hidden */
   announce?: boolean
 }
