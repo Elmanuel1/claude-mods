@@ -48,25 +48,24 @@ only exit codes and the repository permission, so no token is ever shown.
    example "also update the README"). Where the pane has no text field, `/docs-watch redo <owner/repo#number> <note>`
    does the same.
 5. **Approve ships.** Approve (or Approve all) commits the draft under the title the skill wrote (what the docs now
-   cover) and queues it for one branch per repository, `docs/updates`. Within 15 seconds the session that holds the poll lease lands them on the branch, one at a time; when one
-   conflicts with an update already there, the `docs-watch:docs-merge` agent resolves the doc files so both updates'
-   content stays, and the queue carries on. Once the queue is empty the mod pushes the branch with `git` and opens one
-   pull request for every approved update with `gh pr create`, or updates the one already open with `gh pr edit`. Its
-   title is built from the branch's commit subjects. The line above the prompt then says "Docs PR updated" with
-   **Open PR** and **Hide**; a failed push shows its reason with **Retry**. It never pushes to the default branch and
-   never merges: the pull request is where you review the combined change.
-6. **Keeping up.** The 5-minute check also follows the docs pull request: once it merges (squash or merge), its updates
-   leave the list and the branch starts again from the default branch; if it is closed unmerged, its updates go back to
-   approved and are pushed again. While nothing is pushed, the branch is rebuilt whenever the default branch moves,
-   through the same queue, so a conflict with the new default branch is resolved the same way.
+   cover) on its own branch, named for the merged pull request it follows: `docs/updates-<number>`, for example
+   `docs/updates-1089`. Within 15 seconds the session that holds the poll lease pushes that branch with `git` and opens
+   one pull request for it with `gh pr create`, titled with the commit's title. Each update is its own pull request, so
+   updates never wait on each other or conflict on a shared branch. The line above the prompt then says "Docs PR
+   opened" with **Open PR** and **Hide**; a failed push keeps the update approved with its reason and **Retry**. It
+   never pushes to the default branch and never merges: each pull request is where you review its change.
+6. **Keeping up.** The 5-minute check also follows each docs pull request: once it merges (squash or merge), its update
+   leaves the list and its local branch is deleted; if it is closed unmerged, the update counts as dismissed. A branch
+   starts from the default branch as it was when the draft began; GitHub shows when the default branch has moved past
+   it.
 7. **Notifications.** On macOS each step also posts a notification. With `terminal-notifier` installed
    (`brew install terminal-notifier`), a newer one replaces the last instead of stacking.
 8. **Errors.** Every failed `git` or `gh` command, refused subagent start and unreadable result file goes to the debug
-   log and to the pane's **Recent errors** list. A draft or conflict resolution whose subagent the engine refused to
-   start waits, and the next turn, `/docs-watch` or session start tries again.
+   log and to the pane's **Recent errors** list. A draft whose subagent the engine refused to start waits, and the
+   next turn, `/docs-watch` or session start tries again.
 
 ## Limits
 
 - It checks only while a Claude Code session is open; a merge while none is open is picked up at the next session start.
-- Drafting and resolving a conflict run as subagents in your session, on your plan. Pushing and opening the PR run
+- Drafting runs as a subagent in your session, on your plan. Pushing and opening the PR run
   `git` and `gh` only.

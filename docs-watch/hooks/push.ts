@@ -1,84 +1,44 @@
-import type { BranchState } from '../types'
-import { BRANCH, defaultBase, ensureBranch } from './git'
+import type { Tracked } from '../types'
+import { defaultBase, docsBranch } from './git'
 import type { Host } from './host'
 import { logError, notify, runLogged } from './log'
-import { allTracked, branchState, checkoutOf, save, saveBranchState } from './store'
-import { lastLine, prBody, prTitle } from './text'
+import { save } from './store'
+import { docsTitleFrom, lastLine, prBody } from './text'
 
-// A push runs git and gh in one session; a flag older than this was left by a session that ended mid-push.
-const PUSH_STALE_MS = 10 * 60 * 1000
-
-export const pushRunning = (state: BranchState) => state.pushing === true && Date.now() - (state.pushStartedAt ?? 0) < PUSH_STALE_MS
-
-// A push starts now, or right after the one already running. True when the queue needs another look: this push
-// succeeded, or another approval arrived while it ran.
-export async function requestPush(io: Host, repo: string): Promise<boolean> {
-  const state = await branchState(io, repo)
-  if (pushRunning(state)) {
-    await saveBranchState(io, repo, { ...state, pushAgain: true })
-    return false
-  }
-  return push(io, repo)
-}
-
-// An update that lands while the push runs is not in what was pushed, so it stays approved for the next push.
-async function push(io: Host, repo: string): Promise<boolean> {
-  const checkout = await checkoutOf(io, repo)
-  const branch = checkout ? await ensureBranch(io, repo, checkout) : null
-  if (!checkout || !branch) {
-    return false
-  }
-  const startedAt = Date.now()
-  const before = await branchState(io, repo)
-  await saveBranchState(io, repo, { ...before, pushing: true, pushStartedAt: startedAt, pushAgain: false, lastError: undefined, announce: false })
-  await notify(io, `Pushing the docs updates for ${repo}…`)
-  const outcome = await pushAndOpen(io, repo, checkout, branch, before.prUrl)
-  const after = await branchState(io, repo)
+// Pushes one approved update's branch and opens its PR. A push that failed keeps the update approved with the reason.
+export async function pushOne(io: Host, t: Tracked): Promise<void> {
+  const outcome = await pushAndOpen(io, t, t.branch ?? docsBranch(t))
   if ('error' in outcome) {
-    await logError(io, 'push', outcome.error, repo)
-    return finishPush(io, repo, { ...after, pushing: false, lastError: outcome.error })
+    await logError(io, 'push', outcome.error, t.key)
+    await save(io, { ...t, error: outcome.error })
+    await notify(io, `The docs push for ${t.key} failed: ${outcome.error}`)
+    return
   }
-  for (const t of await allTracked(io)) {
-    if (t.repo === repo && t.status === 'approved' && (t.landedAt ?? 0) <= startedAt) {
-      await save(io, { ...t, status: 'pushed', prUrl: outcome.url })
-    }
-  }
-  return finishPush(io, repo, { ...after, pushing: false, prUrl: outcome.url, announce: true })
+  await save(io, { ...t, status: 'pushed', prUrl: outcome.url, announce: true, error: undefined })
+  await notify(io, `Docs PR opened: ${outcome.url}`)
 }
 
-// Pushes the shared branch with git and opens its PR with gh, or updates the one already open.
-async function pushAndOpen(io: Host, repo: string, checkout: string, branch: string, prUrl: string | undefined): Promise<{ url: string } | { error: string }> {
-  const baseRef = await defaultBase(io, checkout)
-  const log = await runLogged(io, 'push', ['git', '-C', branch, 'log', '--reverse', '--format=%s', `${baseRef}..HEAD`], undefined, repo)
-  const subjects = log.stdout.trim().split('\n').filter(Boolean)
-  if (subjects.length === 0) {
-    return { error: 'the docs branch has no commits to push' }
+// A session that ended between the push and gh pr create leaves the branch pushed; the next pass finds or opens its PR.
+async function pushAndOpen(io: Host, t: Tracked, branch: string): Promise<{ url: string } | { error: string }> {
+  if (!t.checkout) {
+    return { error: 'no local checkout is registered for this update' }
   }
-  const pushed = await runLogged(io, 'push', ['git', '-C', branch, 'push', '--force-with-lease', '-u', 'origin', BRANCH], undefined, repo)
+  const pushed = await runLogged(io, 'push', ['git', '-C', t.checkout, 'push', '-u', 'origin', branch], undefined, t.key)
   if (pushed.exitCode !== 0) {
     return { error: `git push: ${lastLine(pushed)}` }
   }
-  const title = prTitle(subjects)
-  const included = (await allTracked(io)).filter((t) => t.repo === repo && (t.status === 'approved' || t.status === 'pushed'))
-  const body = prBody(included)
-  const open = prUrl ?? (await openPrFor(io, repo))
+  const open = await openPrFor(io, t, branch)
   if (open) {
-    const edited = await runLogged(io, 'push', ['gh', 'pr', 'edit', open, '--title', title, '--body', body], undefined, repo)
-    return edited.exitCode === 0 ? { url: open } : { error: `gh pr edit: ${lastLine(edited)}` }
+    return { url: open }
   }
-  const base = baseRef.replace(/^origin\//, '')
-  const create = ['gh', 'pr', 'create', '--repo', repo, '--base', base, '--head', BRANCH, '--title', title, '--body', body]
-  const created = await runLogged(io, 'push', create, branch, repo)
+  const base = (await defaultBase(io, t.checkout)).replace(/^origin\//, '')
+  const title = t.docsTitle ?? docsTitleFrom(t)
+  const create = ['gh', 'pr', 'create', '--repo', t.repo, '--base', base, '--head', branch, '--title', title, '--body', prBody(t)]
+  const created = await runLogged(io, 'push', create, t.checkout, t.key)
   return created.exitCode === 0 ? { url: created.stdout.trim().split('\n').pop() ?? '' } : { error: `gh pr create: ${lastLine(created)}` }
 }
 
-async function openPrFor(io: Host, repo: string): Promise<string | undefined> {
-  const found = await runLogged(io, 'push', ['gh', 'pr', 'list', '--repo', repo, '--head', BRANCH, '--state', 'open', '--json', 'url', '-q', '.[0].url'], undefined, repo)
+async function openPrFor(io: Host, t: Tracked, branch: string): Promise<string | undefined> {
+  const found = await runLogged(io, 'push', ['gh', 'pr', 'list', '--repo', t.repo, '--head', branch, '--state', 'open', '--json', 'url', '-q', '.[0].url'], undefined, t.key)
   return found.stdout.trim() || undefined
-}
-
-async function finishPush(io: Host, repo: string, state: BranchState): Promise<boolean> {
-  await saveBranchState(io, repo, state)
-  await notify(io, state.lastError ? `The docs push for ${repo} failed: ${state.lastError}` : `Docs PR updated: ${state.prUrl ?? ''}`)
-  return state.pushAgain === true || !state.lastError
 }

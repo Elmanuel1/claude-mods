@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
-type Machine = { claude: boolean; gh: boolean; loggedIn: boolean; logoutOnList?: boolean }
+type Machine = { claude: boolean; gh: boolean; loggedIn: boolean; logoutOnList?: boolean; pushFails?: boolean }
 
 const ALL_PRESENT: Machine = { claude: true, gh: true, loggedIn: true }
 const HOME = '/home/me'
@@ -35,6 +35,8 @@ const SUGGESTED = {
   diff: '+retries',
 }
 
+const DOCS_PR = 'https://github.com/o/r/pull/9'
+
 const ok = (stdout = ''): ProcessRunResult => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const fail = (exitCode: number, stderr: string): ProcessRunResult => ({ exitCode, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false })
 
@@ -60,8 +62,10 @@ function answer(argv: readonly string[], machine: Machine): ProcessRunResult {
     'gh repo view --json nameWithOwner -q .nameWithOwner': ok('o/r'),
     [`git -C ${CHECKOUT} symbolic-ref --short refs/remotes/origin/HEAD`]: ok('origin/main'),
     [`git -C ${SUGGESTED.work} rev-parse HEAD`]: ok('abc123'),
-    [`git -C ${HOME}/.claude/docs-watch/branch/o-r rev-parse -q --verify CHERRY_PICK_HEAD`]: fail(1, ''),
-    [`git -C ${HOME}/.claude/docs-watch/branch/o-r log --reverse --format=%s origin/main..HEAD`]: ok('docs: document retries'),
+    [`gh pr view ${DOCS_PR} --json state -q .state`]: ok('MERGED'),
+  }
+  if (command.startsWith(`git -C ${CHECKOUT} push`) && machine.pushFails) {
+    return fail(1, ' ! [rejected]        docs/updates-7 -> docs/updates-7 (fetch first)')
   }
   if (command.startsWith('gh pr create')) {
     return ok('https://github.com/o/r/pull/9')
@@ -163,7 +167,7 @@ test('gh logged out mid-session: a failing gh command brings the popup back', as
   expect(loginPopups()).toHaveLength(2)
 })
 
-test('all present: Approve pushes docs/updates with git and opens one PR with gh, titled by what the docs cover', async ($, on) => {
+test('Approve pushes the update on its own branch, suffixed with the merged PR, and opens its own PR', async ($, on) => {
   const { toasts, ran, clock } = world(on, ALL_PRESENT, { 'repo:o/r': CHECKOUT, [`pr:${SUGGESTED.key}`]: SUGGESTED })
   await $.session.start(START)
 
@@ -171,9 +175,42 @@ test('all present: Approve pushes docs/updates with git and opens one PR with gh
   await pane.press({ key: `approve-${SUGGESTED.key}` })
   await clock.advance(FIRST_TICK + SHIP)
 
-  expect(ran).toContain(`git -C ${HOME}/.claude/docs-watch/branch/o-r push --force-with-lease -u origin docs/updates`)
-  expect(ran.find((c) => c.startsWith('gh pr create'))).toContain('--base main --head docs/updates --title docs: document retries')
-  expect(toasts).toContain('Docs PR updated: https://github.com/o/r/pull/9')
-  expect(await pane.find({ type: 'Text', text: 'In the docs PR: https://github.com/o/r/pull/9' })).toBeDefined()
+  expect(ran).toContain(`git -C ${SUGGESTED.work} switch -q -C docs/updates-7`)
+  expect(ran).toContain(`git -C ${CHECKOUT} push -u origin docs/updates-7`)
+  expect(ran.find((c) => c.startsWith('gh pr create'))).toContain('--base main --head docs/updates-7 --title docs: document retries')
+  expect(toasts).toContain(`Docs PR opened: ${DOCS_PR}`)
+  expect(await pane.find({ type: 'Text', text: `Docs PR: ${DOCS_PR}` })).toBeDefined()
+  await pane.unmount()
+})
+
+test('a failed push keeps the update approved with its reason, and Retry pushes it again', async ($, on) => {
+  const machine = { ...ALL_PRESENT, pushFails: true }
+  const { ran, clock } = world(on, machine, { 'repo:o/r': CHECKOUT, [`pr:${SUGGESTED.key}`]: SUGGESTED })
+  await $.session.start(START)
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  await pane.press({ key: `approve-${SUGGESTED.key}` })
+  await clock.advance(FIRST_TICK + SHIP)
+
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop' })
+  expect(await band.find({ type: 'Text', text: 'Docs push failed for o/r#7' })).toBeDefined()
+  expect(ran.some((c) => c.startsWith('gh pr create'))).toBe(false)
+
+  machine.pushFails = false
+  await band.press({ key: 'retry' })
+  await clock.advance(SHIP)
+  expect(ran.find((c) => c.startsWith('gh pr create'))).toContain('--head docs/updates-7')
+  await band.unmount()
+  await pane.unmount()
+})
+
+test('a merged docs PR takes its update off the list and deletes its local branch', async ($, on) => {
+  const pushed = { ...SUGGESTED, status: 'pushed', branch: 'docs/updates-7', prUrl: DOCS_PR }
+  const { ran, clock } = world(on, ALL_PRESENT, { 'repo:o/r': CHECKOUT, [`pr:${SUGGESTED.key}`]: pushed })
+  await $.session.start(START)
+  await clock.advance(FIRST_TICK)
+
+  expect(ran).toContain(`git -C ${CHECKOUT} branch -D docs/updates-7`)
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await pane.find({ type: 'Text', text: 'No documentation updates waiting.' })).toBeDefined()
   await pane.unmount()
 })

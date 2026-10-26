@@ -26,18 +26,6 @@ export function docsTitleFrom(t: Tracked): string {
   return `docs: cover ${subject}`.slice(0, MAX_TITLE)
 }
 
-// The docs PR's title, from the branch's commit subjects (oldest first): what the docs cover, never only PR numbers.
-export function prTitle(subjects: string[]): string {
-  const topics = subjects.map((s) => s.replace(/^docs:\s*/, ''))
-  const joined = `docs: ${topics.join('; ')}`
-  if (topics.length === 1 || joined.length <= MAX_TITLE) {
-    return joined.slice(0, MAX_TITLE)
-  }
-  const more = ` (+${topics.length - 1} more)`
-  return `docs: ${topics[0]}`.slice(0, MAX_TITLE - more.length) + more
-}
-
-export function prBody(included: Tracked[]): string {
-  const lines = included.map((t) => `- #${t.number} ${t.title ?? ''} (${t.url ?? t.key}): ${t.summary ?? ''}`)
-  return ['Documentation updates after these merged pull requests:', '', ...lines].join('\n')
+export function prBody(t: Tracked): string {
+  return [`Documentation update after #${t.number} ${t.title ?? ''} (${t.url ?? t.key}).`, '', t.summary ?? ''].join('\n')
 }
