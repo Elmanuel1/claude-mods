@@ -5,7 +5,7 @@ import type { Missing, Status, Tracked } from '../types'
 import { bandIsEmpty, bandView } from './band'
 import type { BandActions, BandModel } from './band'
 import { advanceQueues, approve, clearPushErrors } from './branch'
-import { dismiss, redo } from './draft'
+import { dismiss, redo, retry } from './draft'
 import type { Host, Kit } from './host'
 import { clearErrors, logError, recentErrors, runLogged } from './log'
 import { paneView } from './pane'
@@ -163,6 +163,15 @@ function paneActions($: Engine): PaneActions {
         await redo(io, t, note.trim())
         await refreshShown($)
       }),
+    retry: (t) =>
+      inBackground($, 'Retry', async () => {
+        await showStatus($, t, 'drafting')
+        try {
+          await retry(io, t)
+        } finally {
+          await refreshShown($)
+        }
+      }),
     openPr: (url) => inBackground($, 'Open', () => runLogged(io, 'open', ['open', url])),
     clearErrors: () =>
       inBackground($, 'Clear errors', async () => {
@@ -261,6 +270,7 @@ export const register: Register = (on) => {
     const model: BandModel = {
       blocked: blocking((await read($, setup)) ?? []),
       waiting: current.filter((t) => t.status === 'suggested').length,
+      failedUpdates: current.filter((t) => t.status === 'failed').length,
       announced: current.filter((t) => t.status === 'pushed' && t.announce && t.prUrl),
       failed: approved.filter((t) => t.error),
       pushing: approved.some((t) => !t.error),
