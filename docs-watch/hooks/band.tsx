@@ -1,14 +1,14 @@
 import type { RenderElement } from 'claude-code'
 
-import type { BranchState, Missing } from '../types'
+import type { Missing, Tracked } from '../types'
 import type { Kit } from './host'
 import { describeMissing } from './requirements'
 
 export type BandModel = {
   blocked: Missing[]
   waiting: number
-  announced: [string, BranchState][]
-  failed: [string, BranchState][]
+  announced: Tracked[]
+  failed: Tracked[]
   pushing: boolean
 }
 
@@ -36,15 +36,15 @@ export function bandView(kit: Kit, m: BandModel, act: BandActions): RenderElemen
   const parts = [
     m.waiting > 0 ? `${m.waiting} docs update(s) suggested` : '',
     m.pushing ? 'Pushing docs updates…' : '',
-    m.announced.length > 0 ? 'Docs PR updated' : '',
-    m.failed[0] ? `Docs push failed: ${m.failed[0][1].lastError}` : '',
+    m.announced.length > 0 ? `${m.announced.length > 1 ? `${m.announced.length} docs PRs` : 'Docs PR'} opened` : '',
+    m.failed[0] ? `Docs push failed for ${m.failed[0].key}: ${m.failed[0].error}` : '',
   ]
   return (
     <Box>
       <Text>{`${parts.filter(Boolean).join(' · ')} `}</Text>
       {m.waiting > 0 && <Button key="review" label="Review" onPress={act.review} />}
-      {m.announced.map(([repo, b]) => (
-        <Button key={`open-${repo}`} label={m.announced.length > 1 ? `Open ${repo} PR` : 'Open PR'} onPress={() => act.openPr(b.prUrl ?? '')} />
+      {m.announced.map((t) => (
+        <Button key={`open-${t.key}`} label={m.announced.length > 1 ? `Open #${t.number} docs` : 'Open PR'} onPress={() => act.openPr(t.prUrl ?? '')} />
       ))}
       {m.announced.length > 0 && <Button key="hide" label="Hide" onPress={act.hide} />}
       {m.failed.length > 0 && <Button key="retry" label="Retry" onPress={act.retry} />}

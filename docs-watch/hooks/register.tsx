@@ -12,7 +12,7 @@ import { paneView } from './pane'
 import type { PaneActions } from './pane'
 import { startPending, tick } from './poll'
 import { blocking, checkRequirements, describeMissing, dueForPopup, popupText } from './requirements'
-import { branchState, branchStates, registerRepo, saveBranchState, toplevel, tracked, visible } from './store'
+import { registerRepo, save, toplevel, tracked, visible } from './store'
 import { describe } from './text'
 
 const PANE = 'docs-watch'
@@ -26,7 +26,6 @@ const shown = atom({ plugin: 'docs-watch', key: 'shown' } as const, null)
 const diff = atom({ plugin: 'docs-watch', key: 'diff' } as const, null)
 const setup = atom({ plugin: 'docs-watch', key: 'setup' } as const, null)
 const errors = atom({ plugin: 'docs-watch', key: 'errors' } as const, null)
-const branches = atom({ plugin: 'docs-watch', key: 'branches' } as const, null)
 const popups = atom({ plugin: 'docs-watch', key: 'popups' } as const, null)
 
 // The checkout this session runs in, for registering its repository and checking access to it; set at session start.
@@ -128,8 +127,6 @@ async function refreshShown($: Engine): Promise<void> {
   const io = host($)
   const latest = await visible(io)
   await update($, shown, () => latest)
-  const states = await branchStates(io)
-  await update($, branches, () => states)
   const log = await recentErrors(io)
   await update($, errors, () => log)
 }
@@ -142,7 +139,7 @@ function paneActions($: Engine): PaneActions {
   const io = host($)
   const approveThem = async (items: Tracked[]) => {
     for (const t of items) {
-      await showStatus($, t, 'applying')
+      await showStatus($, t, 'approved')
     }
     for (const t of items) {
       await approve(io, t)
@@ -189,8 +186,11 @@ function bandActions($: Engine, announced: string[]): BandActions {
     openPr: (url) => inBackground($, 'Open', () => runLogged(io, 'open', ['open', url])),
     hide: () =>
       inBackground($, 'Hide', async () => {
-        for (const repo of announced) {
-          await saveBranchState(io, repo, { ...(await branchState(io, repo)), announce: false })
+        for (const key of announced) {
+          const t = await tracked(io, key)
+          if (t) {
+            await save(io, { ...t, announce: false })
+          }
         }
         await refreshShown($)
       }),
@@ -257,18 +257,18 @@ export const register: Register = (on) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const current = (await read($, shown)) ?? []
-    const states = Object.entries((await read($, branches)) ?? {})
+    const approved = current.filter((t) => t.status === 'approved')
     const model: BandModel = {
       blocked: blocking((await read($, setup)) ?? []),
       waiting: current.filter((t) => t.status === 'suggested').length,
-      announced: states.filter(([, b]) => b.announce && b.prUrl),
-      failed: states.filter(([, b]) => b.lastError && !b.pushing),
-      pushing: states.some(([, b]) => b.pushing),
+      announced: current.filter((t) => t.status === 'pushed' && t.announce && t.prUrl),
+      failed: approved.filter((t) => t.error),
+      pushing: approved.some((t) => !t.error),
     }
     if (e.props.hasSurvey || bandIsEmpty(model)) {
       return next(e)
     }
-    const announced = model.announced.map(([repo]) => repo)
+    const announced = model.announced.map((t) => t.key)
     return bandView(kitOf($.ui.resolve(e)), model, bandActions($, announced))
   })
 

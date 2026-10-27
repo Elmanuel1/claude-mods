@@ -1,5 +1,5 @@
 import type { Status, Tracked } from '../types'
-import { checkBranch, exclusive, startMerger } from './branch'
+import { checkDocsPr } from './branch'
 import { checkDraft, startDraft, startWriter } from './draft'
 import type { Host } from './host'
 import { logError, runLogged } from './log'
@@ -27,11 +27,6 @@ async function poll(io: Host): Promise<void> {
   for (const t of await allTracked(io)) {
     await STEPS[t.status]?.(io, t)
   }
-  await exclusive(async () => {
-    for (const repo of repos) {
-      await checkBranch(io, repo)
-    }
-  })
 }
 
 async function trackOpen(io: Host, repo: string): Promise<void> {
@@ -73,14 +68,13 @@ async function checkMerged(io: Host, t: Tracked): Promise<void> {
   await (skip ? save(io, { ...t, status: 'skipped' }) : startDraft(io, t))
 }
 
-const STEPS: Partial<Record<Status, (io: Host, t: Tracked) => Promise<void>>> = { open: checkMerged, drafting: checkDraft }
+const STEPS: Partial<Record<Status, (io: Host, t: Tracked) => Promise<void>>> = { open: checkMerged, drafting: checkDraft, pushed: checkDocsPr }
 
 const RESTARTS: Partial<Record<Status, (io: Host, t: Tracked) => Promise<void>>> = {
   drafting: (io, t) => startWriter(io, t, t.note ?? ''),
-  resolving: startMerger,
 }
 
-// Starts the drafts and conflict resolutions that are waiting for a session to take them.
+// Starts the drafts that are waiting for a session to take them.
 export async function startPending(io: Host): Promise<void> {
   try {
     for (const t of (await allTracked(io)).filter((t) => t.pendingStart)) {
