@@ -5,7 +5,7 @@ import { logError, notify, readResult, runLogged, stateDir } from './log'
 import { checkoutOf, save } from './store'
 import { describe, docsTitleFrom, lastLine, slug } from './text'
 
-export const DRAFT_TIMEOUT_MS = 45 * 60 * 1000
+const DRAFT_TIMEOUT_MS = 45 * 60 * 1000
 const DIFF_LIMIT = 60000
 
 export async function draftResult(io: Host, t: Tracked): Promise<string> {
@@ -14,10 +14,10 @@ export async function draftResult(io: Host, t: Tracked): Promise<string> {
 
 // Subagents start only from a session. When the engine refuses or fails to start one (as it may from a timer), the item
 // waits with `pendingStart` and the next turn, `/docs-watch` or session start tries again; each refusal is logged.
-export async function spawnFor(io: Host, t: Tracked, where: string, spec: SpawnSpec): Promise<void> {
+async function spawnFor(io: Host, t: Tracked, spec: SpawnSpec): Promise<void> {
   const started = await startAgent(io, spec)
   if ('problem' in started) {
-    await logError(io, where, started.problem, t.key)
+    await logError(io, 'draft', started.problem, t.key)
     await save(io, { ...t, pendingStart: true, error: started.problem })
     return
   }
@@ -71,7 +71,7 @@ export async function startWriter(io: Host, t: Tracked, note: string): Promise<v
     lines.push(`Note: ${note}`)
   }
   const spec = { prompt: lines.join('\n'), subagentType: 'general-purpose', description: `Docs after ${t.key}`, cwd: t.work }
-  await spawnFor(io, { ...t, note: note || undefined }, 'draft', spec)
+  await spawnFor(io, { ...t, note: note || undefined }, spec)
 }
 
 export async function checkDraft(io: Host, t: Tracked): Promise<void> {
@@ -113,16 +113,9 @@ export async function redo(io: Host, t: Tracked, note: string): Promise<void> {
   io.toast(`Redrafting the docs for ${t.key}…`)
 }
 
-// A failed update with a commit failed while landing on the shared branch, so it goes back in that queue; one without
-// a commit failed while drafting, so it drafts again from the latest default branch.
+// A failed update drafts again from the latest default branch; a failed push stays approved and has its own Retry.
 export async function retry(io: Host, t: Tracked): Promise<void> {
-  const cleared: Tracked = { ...t, error: undefined, pendingStart: undefined }
-  if (t.commit) {
-    await save(io, { ...cleared, status: 'applying' })
-    io.toast(`Adding the docs for ${t.key} to the docs branch again…`)
-    return
-  }
-  const started = await startDraft(io, cleared)
+  const started = await startDraft(io, { ...t, error: undefined, pendingStart: undefined })
   io.toast(started ? `Drafting the docs for ${t.key} again…` : `Retry for ${t.key} failed; the reason is under Recent errors in /docs-watch.`)
 }
 

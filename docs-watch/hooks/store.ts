@@ -1,10 +1,9 @@
-import type { BranchState, Status, Tracked } from '../types'
+import type { Status, Tracked } from '../types'
 import type { Host } from './host'
-import { runLogged, stateDir } from './log'
-import { slug } from './text'
+import { runLogged } from './log'
 
 const LEASE_MS = 10 * 60 * 1000
-const SHOWN: readonly Status[] = ['suggested', 'applying', 'resolving', 'approved', 'pushed', 'failed']
+const SHOWN: readonly Status[] = ['suggested', 'approved', 'pushed', 'failed']
 
 // This session's id for the poller lease: only one open session polls GitHub at a time.
 const me = Math.random().toString(36).slice(2)
@@ -54,26 +53,6 @@ export async function registeredRepos(io: Host): Promise<string[]> {
 
 export async function checkoutOf(io: Host, repo: string): Promise<string | undefined> {
   return (await io.get(`repo:${repo}`)) as string | undefined
-}
-
-export async function branchState(io: Host, repo: string): Promise<BranchState> {
-  return ((await io.get(`branch:${repo}`)) as BranchState | undefined) ?? {}
-}
-
-export async function saveBranchState(io: Host, repo: string, state: BranchState): Promise<void> {
-  await io.set(`branch:${repo}`, state)
-}
-
-export async function branchStates(io: Host): Promise<Record<string, BranchState>> {
-  const states: Record<string, BranchState> = {}
-  for (const repo of await registeredRepos(io)) {
-    states[repo] = await branchState(io, repo)
-  }
-  return states
-}
-
-export async function branchWorktree(io: Host, repo: string): Promise<string> {
-  return `${await stateDir(io)}/branch/${slug(repo)}`
 }
 
 export async function toplevel(io: Host): Promise<string | undefined> {

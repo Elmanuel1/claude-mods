@@ -2,6 +2,7 @@ import type { RenderElement } from 'claude-code'
 
 import type { LogEntry, Missing, Tracked } from '../types'
 import type { Kit } from './host'
+import { docsBranch } from './git'
 import { describeMissing } from './requirements'
 
 export type PaneModel = {
@@ -70,14 +71,10 @@ function statusLine(kit: Kit, t: Tracked, act: PaneActions): RenderElement | nul
   if (t.status === 'drafting' && t.pendingStart) {
     return <Text color="yellow">{`Waiting to start the draft: ${t.error ?? ''}`}</Text>
   }
-  if (t.status === 'resolving') {
-    const waiting = `Waiting to start resolving a conflict: ${t.error ?? ''}`
-    return t.pendingStart ? <Text color="yellow">{waiting}</Text> : <Text>Resolving a conflict with another update…</Text>
-  }
   if (t.status === 'pushed') {
     return (
       <Box>
-        <Text>{`In the docs PR: ${t.prUrl ?? ''} `}</Text>
+        <Text>{`Docs PR: ${t.prUrl ?? ''} `}</Text>
         <Button key={`open-${t.key}`} label="Open PR" onPress={() => act.openPr(t.prUrl ?? '')} />
       </Box>
     )
@@ -85,12 +82,10 @@ function statusLine(kit: Kit, t: Tracked, act: PaneActions): RenderElement | nul
   if (t.status === 'failed') {
     return <Text color="red">{`Failed: ${t.error ?? ''}`}</Text>
   }
-  const lines: Partial<Record<Tracked['status'], string>> = {
-    applying: 'Approved, adding to the docs branch…',
-    approved: 'Approved, pushing…',
+  if (t.status !== 'approved') {
+    return null
   }
-  const line = lines[t.status]
-  return line ? <Text>{line}</Text> : null
+  return t.error ? <Text color="red">{`Push failed: ${t.error}`}</Text> : <Text>{`Approved, pushing ${docsBranch(t)}…`}</Text>
 }
 
 function itemView(kit: Kit, t: Tracked, open: PaneModel['open'], act: PaneActions): RenderElement {

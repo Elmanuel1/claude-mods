@@ -26,7 +26,6 @@ const FAILED_DRAFT = {
   work: WORK,
   error: 'the draft did not finish',
 }
-const FAILED_LANDING = { ...FAILED_DRAFT, commit: 'abc123', error: 'the conflict was not resolved in time' }
 const START = { cwd: CHECKOUT, surface: 'desktop', isInteractive: true } as const
 
 const ok = (stdout = ''): ProcessRunResult => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
@@ -115,19 +114,6 @@ test('Retry on a failed draft drafts again from the default branch', async ($, o
   expect(await pane.find({ type: 'Text', text: 'Waiting to start the draft: subagent did not start (no agent id)' })).toBeDefined()
   await pane.unmount()
   expect(toasts).toContain('Drafting the docs for o/r#7 again…')
-})
-
-test('Retry on a failed landing puts its commit back in the docs branch queue', async ($, on) => {
-  const { ran, saved } = world(on, { 'repo:o/r': CHECKOUT, [`pr:${FAILED_DRAFT.key}`]: FAILED_LANDING })
-  await $.session.start(START)
-
-  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  await pane.press({ key: `retry-${FAILED_DRAFT.key}` })
-  await pane.unmount()
-
-  expect(ran.some((c) => c.includes('worktree add --detach'))).toBe(false)
-  expect(saved.at(0)?.status).toBe('applying')
-  expect(saved.at(0)?.error).toBeUndefined()
 })
 
 test('Retry that cannot start a draft says why and keeps the item failed', async ($, on) => {
