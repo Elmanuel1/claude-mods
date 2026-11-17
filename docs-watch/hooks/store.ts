@@ -75,7 +75,8 @@ export async function registerRepo(io: Host, checkout: string | undefined): Prom
 // A session often runs in a worktree that is deleted when the session ends, while an update drafted from it is pushed
 // later; git lists the repository's main checkout first, and that one outlives its worktrees.
 async function mainCheckout(io: Host, checkout: string): Promise<string> {
-  const list = await io.run(['git', '-C', checkout, 'worktree', 'list', '--porcelain'])
-  const first = list.exitCode === 0 ? list.stdout.split('\n')[0] : ''
+  // -z: a worktree path may itself contain a newline.
+  const list = await io.run(['git', '-C', checkout, 'worktree', 'list', '--porcelain', '-z'])
+  const first = list.exitCode === 0 ? list.stdout.split('\0')[0] : ''
   return first.startsWith('worktree ') ? first.slice('worktree '.length) : checkout
 }

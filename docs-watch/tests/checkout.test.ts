@@ -22,7 +22,9 @@ const FAILED_DRAFT = {
   work: WORK,
   error: 'the draft did not finish',
 }
-const WORKTREES = [`worktree ${MAIN}`, 'HEAD 1111', 'branch refs/heads/main', '', `worktree ${SESSION}`, 'HEAD 2222', 'branch refs/heads/feature', ''].join('\n')
+const LIST = `git -C ${SESSION} worktree list --porcelain -z`
+const worktrees = (main: string) =>
+  [`worktree ${main}`, 'HEAD 1111', 'branch refs/heads/main', '', `worktree ${SESSION}`, 'HEAD 2222', 'branch refs/heads/feature', ''].join('\0')
 
 const ok = (stdout = ''): ProcessRunResult => ({ exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false })
 const fail = (exitCode: number, stderr: string): ProcessRunResult => ({ exitCode, stdout: '', stderr, isStdoutTruncated: false, isStderrTruncated: false })
@@ -32,7 +34,7 @@ function answer(argv: readonly string[]): ProcessRunResult {
     'printenv HOME': ok(HOME),
     'git rev-parse --show-toplevel': ok(SESSION),
     [`git -C ${SESSION} remote get-url origin`]: ok('git@github.com:o/r.git'),
-    [`git -C ${SESSION} worktree list --porcelain`]: ok(WORKTREES),
+    [LIST]: ok(worktrees(MAIN)),
     'gh repo view o/r --json viewerPermission -q .viewerPermission': ok('WRITE'),
     'gh repo view --json nameWithOwner -q .nameWithOwner': ok('o/r'),
     [`git -C ${MAIN} symbolic-ref --short refs/remotes/origin/HEAD`]: ok('origin/main'),
@@ -86,8 +88,16 @@ test('a draft started after registering makes its worktree from the main checkou
 })
 
 test('when git cannot list the worktrees, the session checkout is registered as before', async ($, on) => {
-  const { entries } = world(on, {}, { [`git -C ${SESSION} worktree list --porcelain`]: fail(128, 'fatal: not a git repository') })
+  const { entries } = world(on, {}, { [LIST]: fail(128, 'fatal: not a git repository') })
   await $.session.start({ cwd: SESSION, surface: 'desktop', isInteractive: true })
 
   expect(entries.get('repo:o/r')).toBe(SESSION)
+})
+
+test('a main checkout whose path holds a newline is registered whole', async ($, on) => {
+  const main = '/work/repo\narchive'
+  const { entries } = world(on, {}, { [LIST]: ok(worktrees(main)) })
+  await $.session.start({ cwd: SESSION, surface: 'desktop', isInteractive: true })
+
+  expect(entries.get('repo:o/r')).toBe(main)
 })
