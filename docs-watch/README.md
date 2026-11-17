@@ -34,7 +34,9 @@ only exit codes and the repository permission, so no token is ever shown.
 
 ## How it works
 
-1. **Repositories.** Each Claude Code session registers the GitHub repository it runs in. Nothing to configure.
+1. **Repositories.** Each Claude Code session registers the GitHub repository it runs in, by the repository's main
+   checkout rather than the worktree the session runs in, so drafts and pushes still work after that worktree is
+   deleted. Nothing to configure.
 2. **Watching.** While any Claude Code session is open, one of them checks GitHub every 5 minutes (20 seconds after a
    session starts, then every 5 minutes) for your open pull requests in those repositories, and notices when one merges.
    Only one session polls at a time.
