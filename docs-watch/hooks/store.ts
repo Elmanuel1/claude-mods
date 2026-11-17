@@ -60,7 +60,7 @@ export async function toplevel(io: Host): Promise<string | undefined> {
   return top.exitCode === 0 ? top.stdout.trim() : undefined
 }
 
-// The repository a session works in, so the poller knows where to make worktrees.
+// The repository a session works in, so the poller knows where to make worktrees and push from.
 export async function registerRepo(io: Host, checkout: string | undefined): Promise<void> {
   if (!checkout) {
     return
@@ -69,5 +69,13 @@ export async function registerRepo(io: Host, checkout: string | undefined): Prom
   if (name.exitCode !== 0) {
     return
   }
-  await io.set(`repo:${name.stdout.trim()}`, checkout)
+  await io.set(`repo:${name.stdout.trim()}`, await mainCheckout(io, checkout))
+}
+
+// A session often runs in a worktree that is deleted when the session ends, while an update drafted from it is pushed
+// later; git lists the repository's main checkout first, and that one outlives its worktrees.
+async function mainCheckout(io: Host, checkout: string): Promise<string> {
+  const list = await io.run(['git', '-C', checkout, 'worktree', 'list', '--porcelain'])
+  const first = list.exitCode === 0 ? list.stdout.split('\n')[0] : ''
+  return first.startsWith('worktree ') ? first.slice('worktree '.length) : checkout
 }
